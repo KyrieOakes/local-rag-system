@@ -1,4 +1,55 @@
-# 忽略 Windows 的安全标识文件
-*:Zone.Identifier
-# 忽略 Mac 的隐藏文件
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# IDE / OS
+.vscode/
+.idea/
 .DS_Store
+
+# Local data
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Logs
+*.log
+logs/
+
+# Docker / local runtime
+*.pid
+
+# Qdrant / database local files
+qdrant_storage/
+postgres_data/
+
+# LM Studio / local model cache should never be committed
+*.gguf
+models/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Jupyter
+.ipynb_checkpoints/
