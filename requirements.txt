@@ -1,0 +1,23 @@
+# --- Web 框架 ---
+fastapi==0.136.1
+uvicorn[standard]==0.46.0
+python-multipart==0.0.26
+
+# --- AI & Agent 核心框架 ---
+langchain==1.2.15
+langchain-community==0.4.1
+langchain-openai==1.2.1
+langchain-qdrant==1.1.0
+langchain-text-splitters==1.1.2
+langgraph==1.1.9
+openai==2.32.0
+
+# --- 向量数据库 & 数据处理 ---
+qdrant-client==1.17.1
+pypdf==6.10.2
+numpy
+
+# --- 工具类 ---
+python-dotenv==1.2.2
+pydantic-settings==2.14.0
+tiktoken
