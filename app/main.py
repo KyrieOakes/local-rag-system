@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.health import router as health_router
 from app.api.documents import router as documents_router
@@ -8,6 +9,17 @@ from app.api.rag import router as rag_router
 app = FastAPI(
     title="Local RAG System",
     version="0.1.0",
+)
+# 配置CORS中间件，允许来自指定前端地址的跨域请求，以便前端能够与后端API进行通信
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # 将健康检查路由和文档相关的路由注册到FastAPI应用中，使得这些路由能够处理相应的API请求
