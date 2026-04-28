@@ -54,3 +54,6 @@ temp/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Continue VSCode extension config
+.continue/
