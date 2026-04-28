@@ -1,7 +1,7 @@
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 
-from app.llm.local_llm import get_local_llm
+from app.llm.local_llm import get_llm
 from app.rag.prompt import rag_prompt
 
 # 格式化文档列表为RAG系统提示所需的上下文字符串
@@ -29,7 +29,7 @@ def format_documents_for_context(documents: list[Document]) -> str:
 
 def generate_answer(question: str, documents: list[Document]) -> str:
     # 获取本地部署的LLM模型实例
-    llm = get_local_llm()
+    llm = get_llm()
     # 将文档列表格式化为RAG系统提示所需的上下文字符串
     context = format_documents_for_context(documents)
 
