@@ -7,7 +7,7 @@ class Settings(BaseSettings):
 
     # ── LLM Provider 选择 ──
     # 可选值: "local" (本地 LM Studio/Ollama) 或 "cloud" (云端 API)
-    llm_provider: str = "local"
+    llm_provider: str = "cloud"
 
     # ── 本地 LLM 配置 ──
     llm_base_url: str = "http://127.0.0.1:1234/v1"

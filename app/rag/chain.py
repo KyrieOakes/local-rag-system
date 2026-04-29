@@ -1,8 +1,13 @@
+import logging
+import time
+
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 
 from app.llm.local_llm import get_llm
 from app.rag.prompt import rag_prompt
+
+logger = logging.getLogger(__name__)
 
 # 格式化文档列表为RAG系统提示所需的上下文字符串
 def format_documents_for_context(documents: list[Document]) -> str:
@@ -31,17 +36,23 @@ def generate_answer(question: str, documents: list[Document]) -> str:
     # 获取本地部署的LLM模型实例
     llm = get_llm()
     # 将文档列表格式化为RAG系统提示所需的上下文字符串
+    step4_start = time.perf_counter()
+    logger.info("[RAG][STEP 4] prompt 构建开始")
     context = format_documents_for_context(documents)
 
     # 构建RAG系统提示链，将提示模板、LLM模型和输出解析器组合在一起
     chain = rag_prompt | llm | StrOutputParser()
+    logger.info("[RAG][STEP 4] prompt 构建完成，耗时 %.3fs", time.perf_counter() - step4_start)
 
     # 调用链来生成答案，传入用户问题和格式化后的上下文字符串
+    step5_start = time.perf_counter()
+    logger.info("[RAG][STEP 5] LLM 调用开始")
     answer = chain.invoke(
         {
             "question": question,
             "context": context,
         }
     )
+    logger.info("[RAG][STEP 5] LLM 调用完成，耗时 %.3fs", time.perf_counter() - step5_start)
 
     return answer
