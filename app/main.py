@@ -1,9 +1,16 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.health import router as health_router
 from app.api.documents import router as documents_router
 from app.api.rag import router as rag_router
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
 
 # 创建一个FastAPI应用实例，设置应用的标题为"Local RAG System"和版本号为"0.1.0"
 app = FastAPI(

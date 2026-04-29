@@ -1,6 +1,11 @@
+import logging
+import time
+
 from langchain_core.documents import Document
 
 from app.rag.vectorstore import get_vectorstore
+
+logger = logging.getLogger(__name__)
 
 # 从向量数据库中检索与问题相关的文档，返回文档和相似度评分的列表
 def retrieve_relevant_documents(question: str, top_k: int = 5) -> list[tuple[Document, float]]:
@@ -8,9 +13,12 @@ def retrieve_relevant_documents(question: str, top_k: int = 5) -> list[tuple[Doc
     vectorstore = get_vectorstore()
 
     # 使用相似度搜索方法检索相关文档，返回文档和相似度评分的列表
+    step3_start = time.perf_counter()
+    logger.info("[RAG][STEP 3] 向量检索开始")
     results = vectorstore.similarity_search_with_score(
         query=question,
         k=top_k,
     )
+    logger.info("[RAG][STEP 3] 向量检索完成，命中 %s 条，耗时 %.3fs", len(results), time.perf_counter() - step3_start)
 
     return results

@@ -12,7 +12,7 @@ def get_llm() -> ChatOpenAI:
 
     使用时无需改动任何业务代码，只需修改 .env 中的配置即可切换。
     """
-    if settings.llm_provider == "cloud":
+    if settings.llm_provider == "local":
         return ChatOpenAI(
             model=settings.cloud_llm_model,
             base_url=settings.cloud_llm_base_url,
