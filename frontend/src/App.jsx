@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { healthCheck, uploadDocument, queryRag } from "./api";
+import { healthCheck, uploadDocument, queryRag, listDocuments, deleteDocument } from "./api";
 import "./App.css";
 
 function App() {
@@ -15,10 +15,20 @@ function App() {
   const [showUploadPanel, setShowUploadPanel] = useState(false);
   const [uploadBtnAnim, setUploadBtnAnim] = useState(false);
   const [inputHover, setInputHover] = useState(false);
+
+  // ── Document Management State ──
+  const [showDocMgr, setShowDocMgr] = useState(false);
+  const [docsList, setDocsList] = useState([]);
+  const [docsLoading, setDocsLoading] = useState(false);
+  const [docsError, setDocsError] = useState(null);
+  const [deletingSource, setDeletingSource] = useState(null);
+  const [deleteMsg, setDeleteMsg] = useState(null);
+
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const uploadBtnRef = useRef(null);
   const uploadPanelRef = useRef(null);
+  const docMgrPanelRef = useRef(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -60,6 +70,28 @@ function App() {
     };
   }, [showUploadPanel]);
 
+  // ── Document Manager: click outside / Escape ──
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (
+        showDocMgr &&
+        docMgrPanelRef.current &&
+        !docMgrPanelRef.current.contains(e.target)
+      ) {
+        setShowDocMgr(false);
+      }
+    }
+    function handleEsc(e) {
+      if (e.key === "Escape" && showDocMgr) setShowDocMgr(false);
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleEsc);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleEsc);
+    };
+  }, [showDocMgr]);
+
   async function openUploadPanel() {
     setUploadBtnAnim(true);
     // Wait for expand animation
@@ -70,6 +102,53 @@ function App() {
 
   function closeUploadPanel() {
     setShowUploadPanel(false);
+  }
+
+  // ── Document Manager Handlers ──
+  async function openDocManager() {
+    setShowDocMgr(true);
+    setDocsLoading(true);
+    setDocsError(null);
+    setDeleteMsg(null);
+    try {
+      const docs = await listDocuments();
+      setDocsList(Array.isArray(docs) ? docs : []);
+    } catch (err) {
+      setDocsError(err.response?.data?.detail || "Failed to load documents");
+      setDocsList([]);
+    } finally {
+      setDocsLoading(false);
+    }
+  }
+
+  async function handleDeleteDoc(source) {
+    if (deletingSource) return;
+    setDeletingSource(source);
+    setDeleteMsg(null);
+    try {
+      await deleteDocument(source);
+      setDeleteMsg({ type: "success", text: `Deleted "${source}" successfully` });
+      // Refresh the list
+      try {
+        const docs = await listDocuments();
+        setDocsList(Array.isArray(docs) ? docs : []);
+      } catch {}
+    } catch (err) {
+      setDeleteMsg({ type: "error", text: `Failed to delete "${source}": ${err.response?.data?.detail || "Unknown error"}` });
+    } finally {
+      setDeletingSource(null);
+    }
+  }
+
+  // Group documents by file type
+  function groupByType(docs) {
+    const groups = {};
+    for (const doc of docs) {
+      const ft = doc.file_type || "unknown";
+      if (!groups[ft]) groups[ft] = [];
+      groups[ft].push(doc);
+    }
+    return groups;
   }
 
   async function handleSend() {
@@ -175,6 +254,14 @@ function App() {
     offline: { label: "Offline", color: "#ef4444" },
   };
 
+  // ── File type icon helper ──
+  function fileTypeIcon(ft) {
+    if (ft === ".pdf") return "📄";
+    if (ft === ".txt") return "📝";
+    if (ft === ".md") return "📋";
+    return "📁";
+  }
+
   return (
     <div className="chat-container">
       {/* Sidebar */}
@@ -239,7 +326,112 @@ function App() {
             Upload Document
           </button>
         </div>
+
+        {/* ── Document Manager Trigger ── */}
+        <div className="sidebar-section">
+          <div className="section-title">Manage Documents</div>
+          <button className="docmgr-trigger-btn" onClick={openDocManager}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
+              <polyline points="13 2 13 9 20 9"></polyline>
+            </svg>
+            Browse & Delete
+          </button>
+        </div>
       </aside>
+
+      {/* ── Document Manager Modal ── */}
+      {showDocMgr && (
+        <div className="upload-modal-overlay">
+          <div className="upload-modal docmgr-modal" ref={docMgrPanelRef}>
+            <div className="upload-modal-header">
+              <h2>Document Manager</h2>
+              <button className="modal-close-btn" onClick={() => setShowDocMgr(false)}>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+              </button>
+            </div>
+
+            {docsLoading ? (
+              <div className="docmgr-loading">
+                <div className="typing-indicator">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </div>
+                <p>Loading documents...</p>
+              </div>
+            ) : docsError ? (
+              <div className="docmgr-error">
+                <p>{docsError}</p>
+                <button className="docmgr-retry-btn" onClick={() => openDocManager()}>
+                  Retry
+                </button>
+              </div>
+            ) : docsList.length === 0 ? (
+              <div className="docmgr-empty">
+                <div className="docmgr-empty-icon">📭</div>
+                <p>No documents indexed yet.</p>
+                <p className="docmgr-hint">Upload documents first using the Upload panel.</p>
+              </div>
+            ) : (
+              <div className="docmgr-list">
+                {Object.entries(groupByType(docsList)).map(([ft, docs]) => (
+                  <div key={ft} className="docmgr-group">
+                    <div className="docmgr-group-header">
+                      <span className="docmgr-group-icon">{fileTypeIcon(ft)}</span>
+                      <span className="docmgr-group-type">{ft}</span>
+                      <span className="docmgr-group-count">{docs.length} file{docs.length > 1 ? "s" : ""}</span>
+                    </div>
+                    <div className="docmgr-group-files">
+                      {docs.map((doc) => (
+                        <div key={doc.source} className="docmgr-file-row">
+                          <span className="docmgr-file-name" title={doc.source}>
+                            {doc.source}
+                          </span>
+                          <span className="docmgr-file-chunks">{doc.chunks} chunks</span>
+                          <button
+                            className="docmgr-delete-btn"
+                            onClick={() => handleDeleteDoc(doc.source)}
+                            disabled={deletingSource === doc.source}
+                            title={`Delete ${doc.source}`}
+                          >
+                            {deletingSource === doc.source ? (
+                              <span className="docmgr-delete-loader"></span>
+                            ) : (
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <polyline points="3 6 5 6 21 6"></polyline>
+                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                              </svg>
+                            )}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+
+                {deleteMsg && (
+                  <div className={`modal-upload-msg ${deleteMsg.type}`} style={{ marginTop: 12 }}>
+                    {deleteMsg.text}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <button className="docmgr-refresh-btn" onClick={() => openDocManager()}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polyline points="23 4 23 10 17 10"></polyline>
+                <polyline points="1 20 1 14 7 14"></polyline>
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+              </svg>
+              Refresh
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Upload Modal Panel */}
       {showUploadPanel && (

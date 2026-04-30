@@ -1034,3 +1034,244 @@
     z-index: -1;
   }
 }
+
+/* ========== Document Manager Trigger Button ========== */
+
+.docmgr-trigger-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid #3f3f3f;
+  border-radius: 10px;
+  background: transparent;
+  color: #e5e5e5;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: inherit;
+}
+
+.docmgr-trigger-btn:hover {
+  background: #2a2a2a;
+  border-color: #f59e0b;
+}
+
+/* ========== Document Manager Modal ========== */
+
+.docmgr-modal {
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.docmgr-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 40px 0;
+  color: #9ca3af;
+  font-size: 14px;
+}
+
+.docmgr-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 24px;
+  color: #fca5a5;
+  font-size: 14px;
+  text-align: center;
+  background: rgba(239, 68, 68, 0.08);
+  border-radius: 12px;
+  margin: 16px 0;
+}
+
+.docmgr-retry-btn {
+  padding: 8px 16px;
+  border: 1px solid #3f3f3f;
+  border-radius: 8px;
+  background: #2a2a2a;
+  color: #e5e5e5;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+  transition: background 0.15s;
+}
+
+.docmgr-retry-btn:hover {
+  background: #3f3f3f;
+}
+
+.docmgr-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 40px 0;
+  color: #9ca3af;
+  text-align: center;
+}
+
+.docmgr-empty-icon {
+  font-size: 40px;
+  margin-bottom: 8px;
+}
+
+.docmgr-hint {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.docmgr-list {
+  flex: 1;
+  overflow-y: auto;
+  max-height: 50vh;
+  margin: 4px 0;
+}
+
+.docmgr-list::-webkit-scrollbar {
+  width: 5px;
+}
+
+.docmgr-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.docmgr-list::-webkit-scrollbar-thumb {
+  background: #3f3f3f;
+  border-radius: 3px;
+}
+
+.docmgr-group {
+  margin-bottom: 16px;
+}
+
+.docmgr-group:last-child {
+  margin-bottom: 4px;
+}
+
+.docmgr-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid #2f2f2f;
+  margin-bottom: 6px;
+}
+
+.docmgr-group-icon {
+  font-size: 16px;
+}
+
+.docmgr-group-type {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #a78bfa;
+  flex: 1;
+}
+
+.docmgr-group-count {
+  font-size: 11px;
+  color: #6b7280;
+  background: #2a2a2a;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.docmgr-group-files {
+  display: flex;
+  flex-direction: column;
+}
+
+.docmgr-file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 6px;
+  border-radius: 8px;
+  transition: background 0.15s;
+}
+
+.docmgr-file-row:hover {
+  background: #2a2a2a;
+}
+
+.docmgr-file-name {
+  flex: 1;
+  font-size: 13px;
+  color: #d4d4d4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.docmgr-file-chunks {
+  font-size: 11px;
+  color: #6b7280;
+  white-space: nowrap;
+}
+
+.docmgr-delete-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #9ca3af;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.docmgr-delete-btn:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.12);
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.docmgr-delete-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.docmgr-delete-loader {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-top-color: #fca5a5;
+  animation: spin 0.6s linear infinite;
+}
+
+.docmgr-refresh-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #3f3f3f;
+  border-radius: 10px;
+  background: transparent;
+  color: #9ca3af;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.2s ease;
+  margin-top: 12px;
+}
+
+.docmgr-refresh-btn:hover {
+  background: #2a2a2a;
+  color: #e5e5e5;
+  border-color: #6366f1;
+}
