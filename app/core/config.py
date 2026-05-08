@@ -11,7 +11,7 @@ class Settings(BaseSettings):
 
     # ── 本地 LLM 配置 ──
     llm_base_url: str = "http://127.0.0.1:7239/v1"
-    llm_model: str = "lmstudio-community/gemma-4-31B-it-MLX-4bit"
+    llm_model: str = "lmstudio-community/Qwen3-8B-MLX-8bit"
     llm_api_key: str = "mlx-studio"
 
     # ── 云端 LLM 配置（仅在 llm_provider="cloud" 时使用） ──

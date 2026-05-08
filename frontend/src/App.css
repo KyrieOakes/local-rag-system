@@ -744,13 +744,15 @@
 }
 
 .message-text {
-  font-size: 15px;
-  line-height: 1.7;
-  color: #e5e5e5;
-  white-space: pre-wrap;
-  word-break: break-word;
-  padding: 8px 0;
-}
+    font-size: 15px;
+    line-height: 1.7;
+    color: #e5e5e5;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: normal;
+    line-break: strict;
+    padding: 8px 0;
+  }
 
 .message.user .message-text {
   background: rgba(167, 139, 250, 0.12);
