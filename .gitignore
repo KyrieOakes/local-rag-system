@@ -32,9 +32,6 @@ data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 
-# Logs
-*.log
-logs/
 
 # Docker / local runtime
 *.pid
