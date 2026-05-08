@@ -7,12 +7,12 @@ class Settings(BaseSettings):
 
     # ── LLM Provider 选择 ──
     # 可选值: "local" (本地 LM Studio/Ollama) 或 "cloud" (云端 API)
-    llm_provider: str = "cloud"
+    llm_provider: str = "local"
 
     # ── 本地 LLM 配置 ──
-    llm_base_url: str = "http://127.0.0.1:1234/v1"
-    llm_model: str = "qwen/qwen3-v1-8b"
-    llm_api_key: str = "lm-studio"
+    llm_base_url: str = "http://127.0.0.1:7239/v1"
+    llm_model: str = "lmstudio-community/gemma-4-31B-it-MLX-4bit"
+    llm_api_key: str = "mlx-studio"
 
     # ── 云端 LLM 配置（仅在 llm_provider="cloud" 时使用） ──
     cloud_llm_base_url: str = "https://api.deepseek.com"
@@ -21,7 +21,7 @@ class Settings(BaseSettings):
 
     # ── Embedding 配置 ──
     embedding_base_url: str = "http://127.0.0.1:1234/v1"
-    embedding_model: str = "text-embedding-bge-small-zh-v1.5"
+    embedding_model: str = "text-embedding-nomic-embed-text-v1.5"
     embedding_api_key: str = "lm-studio"
 
     # ── Qdrant 配置 ──
