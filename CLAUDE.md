@@ -58,6 +58,6 @@ Copy `.env.example` to `.env` before starting. The backend reads configuration f
 - All LLM/embedding calls use the OpenAI-compatible API format (works with LM Studio, Ollama, or cloud providers)
 - Uploaded files stored in `data/raw/`, referenced by UUID filename; the original name goes into Qdrant point metadata
 
-## Continue rules
+## Dev log habit
 
-The `.continue/rules/dev-log.md` rule requires generating a structured dev log in `logs/` after every completed coding task. The log format includes date, tags, overview, file lists, backend/frontend/API/DB changes, implementation details, architecture decisions, testing steps, edge cases, known issues, and future improvements.
+After every completed coding task (bug fix, feature, refactor), generate a structured dev log file in `logs/`. Name format: `DevLog-YYYY-MM-DD-简短描述.md`. Reference `logs/DevLog-2025-04-30-文档管理API.md` for the exact format — it includes: date, tags, overview, file change list (表格), API design, implementation details, new dependencies, test verification steps, edge cases, and impact analysis. The `.continue/rules/dev-log.md` rule also enforces this.

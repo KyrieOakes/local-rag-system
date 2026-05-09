@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import ReactMarkdown from "react-markdown";
 import {
   healthCheck,
   uploadDocument,
@@ -795,7 +796,13 @@ function App() {
                   </div>
                 ) : (
                   <>
-                    <div className="message-text">{msg.content}</div>
+                    {msg.role === "assistant" ? (
+                      <div className="message-text">
+                        <ReactMarkdown>{msg.content}</ReactMarkdown>
+                      </div>
+                    ) : (
+                      <div className="message-text">{msg.content}</div>
+                    )}
 
                     {msg.sources && msg.sources.length > 0 && (
                       <div className="message-sources">
