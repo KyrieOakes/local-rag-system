@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import {
   healthCheck,
   uploadDocument,
+  uploadDocuments,
   queryRag,
   listDocuments,
   deleteDocument,
@@ -18,9 +19,10 @@ function App() {
 
   const [showSidebar, setShowSidebar] = useState(false);
 
-  const [file, setFile] = useState(null);
+  const [files, setFiles] = useState([]);
   const [loadingUpload, setLoadingUpload] = useState(false);
   const [uploadMsg, setUploadMsg] = useState(null);
+  const [uploadResults, setUploadResults] = useState(null);
   const [showUploadPanel, setShowUploadPanel] = useState(false);
   const [uploadBtnAnim, setUploadBtnAnim] = useState(false);
 
@@ -132,6 +134,8 @@ function App() {
   function closeUploadPanel() {
     setShowUploadPanel(false);
     setUploadMsg(null);
+    setFiles([]);
+    setUploadResults(null);
   }
 
   async function openDocManager() {
@@ -280,28 +284,41 @@ function App() {
   }
 
   async function handleUpload() {
-    if (!file || loadingUpload) return;
+    if (files.length === 0 || loadingUpload) return;
 
     setLoadingUpload(true);
     setUploadMsg(null);
+    setUploadResults(null);
 
     try {
-      await uploadDocument(file);
+      const data = await uploadDocuments(files);
+      const results = data.results;
 
-      setUploadMsg({
-        type: "success",
-        text: `✅ ${file.name} uploaded and indexed successfully.`,
-      });
+      setUploadResults(results);
 
-      setFile(null);
+      const succeeded = results.filter((r) => r.status === "indexed").length;
+      const failed = results.filter((r) => r.status === "error").length;
 
-      setTimeout(() => {
-        closeUploadPanel();
-      }, 1300);
+      if (failed === 0) {
+        setUploadMsg({
+          type: "success",
+          text: `${succeeded} file${succeeded !== 1 ? "s" : ""} uploaded and indexed successfully.`,
+        });
+      } else if (succeeded === 0) {
+        setUploadMsg({
+          type: "error",
+          text: `All ${failed} file${failed !== 1 ? "s" : ""} failed.`,
+        });
+      } else {
+        setUploadMsg({
+          type: "partial",
+          text: `${succeeded} indexed, ${failed} failed.`,
+        });
+      }
     } catch (err) {
       setUploadMsg({
         type: "error",
-        text: `❌ Upload failed: ${
+        text: `Upload failed: ${
           err.response?.data?.detail || "Unknown error"
         }`,
       });
@@ -338,6 +355,11 @@ function App() {
     if (value >= 0.7) return "#22c55e";
     if (value >= 0.5) return "#f59e0b";
     return "#ef4444";
+  }
+
+  function getFileResult(filename) {
+    if (!Array.isArray(uploadResults)) return null;
+    return uploadResults.find((r) => r.filename === filename) || null;
   }
 
   return (
@@ -471,44 +493,42 @@ function App() {
             </div>
 
             <div
-              className={`modal-upload-area ${file ? "has-file" : ""}`}
+              className={`modal-upload-area ${files.length > 0 ? "has-files" : ""}`}
               onClick={() => fileInputRef.current?.click()}
             >
               <input
                 ref={fileInputRef}
                 type="file"
                 accept=".pdf,.txt,.md"
+                multiple
                 style={{ display: "none" }}
                 onChange={(e) => {
-                  const selectedFile = e.target.files?.[0];
-                  if (selectedFile) {
-                    setFile(selectedFile);
+                  const selected = Array.from(e.target.files || []);
+                  if (selected.length > 0) {
+                    setFiles((prev) => [...prev, ...selected]);
                     setUploadMsg(null);
+                    setUploadResults(null);
                   }
+                  e.target.value = "";
                 }}
               />
 
-              {file ? (
-                <>
-                  <div className="modal-file-icon">📄</div>
-
-                  <div className="modal-file-info">
-                    <p className="modal-file-name">{file.name}</p>
-                    <p className="modal-file-size">
-                      {(file.size / 1024).toFixed(1)} KB
-                    </p>
-                  </div>
-
-                  <button
-                    className="modal-file-remove"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setFile(null);
-                    }}
+              {files.length > 0 ? (
+                <div className="modal-upload-add-more">
+                  <svg
+                    width="20"
+                    height="20"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
                   >
-                    ✕
-                  </button>
-                </>
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="17 8 12 3 7 8"></polyline>
+                    <line x1="12" y1="3" x2="12" y2="15"></line>
+                  </svg>
+                  <span>Click to add more files</span>
+                </div>
               ) : (
                 <>
                   <svg
@@ -523,24 +543,88 @@ function App() {
                     <polyline points="17 8 12 3 7 8"></polyline>
                     <line x1="12" y1="3" x2="12" y2="15"></line>
                   </svg>
-                  <p className="modal-upload-text">Click to choose a file</p>
+                  <p className="modal-upload-text">Click to choose files</p>
                   <p className="modal-upload-hint">
-                    PDF, TXT, and Markdown files are supported.
+                    PDF, TXT, and Markdown files are supported. Multiple files allowed.
                   </p>
                 </>
               )}
             </div>
 
+            {files.length > 0 && (
+              <div className="modal-file-list">
+                {files.map((f, idx) => {
+                  const result = getFileResult(f.name);
+                  return (
+                    <div
+                      key={`${f.name}-${idx}`}
+                      className={`modal-file-row${
+                        result
+                          ? result.status === "indexed"
+                            ? " success"
+                            : " error"
+                          : ""
+                      }`}
+                    >
+                      <span className="modal-file-row-icon">
+                        {fileTypeIcon(
+                          f.name.slice(f.name.lastIndexOf("."))
+                        )}
+                      </span>
+                      <div className="modal-file-row-info">
+                        <p className="modal-file-row-name">{f.name}</p>
+                        <p className="modal-file-row-size">
+                          {(f.size / 1024).toFixed(1)} KB
+                        </p>
+                      </div>
+                      {result ? (
+                        <span
+                          className={`modal-file-row-status ${
+                            result.status === "indexed" ? "success" : "error"
+                          }`}
+                          title={
+                            result.status === "error"
+                              ? result.error
+                              : `${result.chunks} chunks`
+                          }
+                        >
+                          {result.status === "indexed" ? "✓" : "✗"}
+                        </span>
+                      ) : (
+                        <button
+                          className="modal-file-row-remove"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setFiles((prev) =>
+                              prev.filter((_, i) => i !== idx)
+                            );
+                            setUploadMsg(null);
+                            setUploadResults(null);
+                          }}
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
             <button
               className="modal-upload-btn"
               onClick={handleUpload}
-              disabled={!file || loadingUpload}
+              disabled={files.length === 0 || loadingUpload}
             >
               {loadingUpload ? (
                 <span className="modal-btn-loading">
                   <span className="modal-loader"></span>
                   Uploading...
                 </span>
+              ) : files.length > 0 ? (
+                `Upload & Index ${files.length} File${
+                  files.length !== 1 ? "s" : ""
+                }`
               ) : (
                 "Upload & Index"
               )}
