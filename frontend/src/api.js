@@ -22,6 +22,21 @@ export async function uploadDocument(file) {
   return res.data;
 }
 
+export async function uploadDocuments(files) {
+  const formData = new FormData();
+  for (const file of files) {
+    formData.append('files', file);
+  }
+
+  const res = await api.post('/documents/upload-batch', formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data',
+    },
+  });
+
+  return res.data;
+}
+
 export async function queryRag(question, topK = 4) {
   const res = await api.post('/rag/query', {
     question,

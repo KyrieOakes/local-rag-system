@@ -1,3 +1,5 @@
+from typing import List
+
 from fastapi import APIRouter, File, HTTPException, UploadFile, Body
 
 from app.services.ingestion_service import ingest_document
@@ -28,6 +30,32 @@ async def upload_document(file: UploadFile = File(...)):
     except Exception as error:
         # 如果在文档摄取过程中发生任何其他异常，返回一个500 Internal Server Error的HTTP响应，并包含错误信息，提示文档摄取失败
         raise HTTPException(status_code=500, detail=f"Document ingestion failed: {error}")
+
+
+@router.post("/upload-batch")
+async def upload_documents_batch(files: List[UploadFile] = File(...)):
+    results = []
+    for file in files:
+        try:
+            file_path = await save_upload_file(file)
+            result = ingest_document(
+                file_path=file_path,
+                original_filename=file.filename,
+            )
+            results.append(result)
+        except ValueError as error:
+            results.append({
+                "filename": file.filename,
+                "status": "error",
+                "error": str(error),
+            })
+        except Exception as error:
+            results.append({
+                "filename": file.filename,
+                "status": "error",
+                "error": f"Document ingestion failed: {error}",
+            })
+    return {"results": results}
 
 
 @router.get("")

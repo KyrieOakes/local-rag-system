@@ -33,7 +33,7 @@ Copy `.env.example` to `.env` before starting. The backend reads configuration f
 **Backend** (`app/`) — FastAPI application with three route modules and a layered RAG pipeline:
 
 - `app/main.py` — App factory, CORS middleware (allows `:5173`), route registration
-- `app/api/` — Route handlers: `health.py` (`GET /health`), `documents.py` (`POST /upload`, `GET /`, `DELETE /{source}`), `rag.py` (`POST /rag/query`)
+- `app/api/` — Route handlers: `health.py` (`GET /health`), `documents.py` (`POST /upload`, `POST /upload-batch`, `GET /`, `DELETE /{source}`), `rag.py` (`POST /rag/query`)
 - `app/services/` — Business logic orchestration. `ingestion_service.py` wires loader → splitter → vectorstore; `rag_service.py` wires retriever → chain; `document_service.py` handles list/delete by querying Qdrant directly
 - `app/rag/` — The RAG pipeline primitives:
   - `loader.py` — Loads PDF (PyPDF), TXT/MD (TextLoader) via LangChain document loaders
@@ -51,7 +51,8 @@ Copy `.env.example` to `.env` before starting. The backend reads configuration f
 **Frontend** (`frontend/`) — React 19 + Vite, single-page chat UI:
 
 - `src/App.jsx` — Entire application in one component (sidebar, chat messages, upload modal, document manager modal). No router — all UI state managed via `useState`. Health check on mount, scroll-to-bottom on new messages, click-outside/Escape to close panels.
-- `src/api.js` — Axios instance pointing at `http://127.0.0.1:8000`, exports `healthCheck`, `uploadDocument`, `queryRag`, `listDocuments`, `deleteDocument`
+- `src/api.js` — Axios instance pointing at `http://127.0.0.1:8000`, exports `healthCheck`, `uploadDocument`, `uploadDocuments`, `queryRag`, `listDocuments`, `deleteDocument`
+- Frontend dependencies include `react-markdown` for rendering LLM Markdown responses
 
 **Infrastructure:**
 - Qdrant runs via Docker Compose, data persisted to `qdrant_storage/`
@@ -61,3 +62,7 @@ Copy `.env.example` to `.env` before starting. The backend reads configuration f
 ## Dev log habit
 
 After every completed coding task (bug fix, feature, refactor), generate a structured dev log file in `logs/`. Name format: `DevLog-YYYY-MM-DD-简短描述.md`. Reference `logs/DevLog-2025-04-30-文档管理API.md` for the exact format — it includes: date, tags, overview, file change list (表格), API design, implementation details, new dependencies, test verification steps, edge cases, and impact analysis. The `.continue/rules/dev-log.md` rule also enforces this.
+
+## CLAUDE.md maintenance
+
+After every code change (except log files in `logs/`), update CLAUDE.md to reflect the current project state: new/removed endpoints, new/removed dependencies, changed file responsibilities, new architectural patterns, etc. Keep it accurate and current — stale CLAUDE.md is worse than none.
