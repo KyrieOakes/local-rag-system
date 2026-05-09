@@ -775,6 +775,119 @@
   color: #d4d4d4;
 }
 
+/* ========== Markdown rendered content ========== */
+
+.message-text p {
+  margin: 0 0 10px 0;
+}
+
+.message-text p:last-child {
+  margin-bottom: 0;
+}
+
+.message-text strong {
+  color: #f0f0f0;
+  font-weight: 600;
+}
+
+.message-text em {
+  font-style: italic;
+  color: #c4b5fd;
+}
+
+.message-text code {
+  background: rgba(167, 139, 250, 0.12);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: "SF Mono", "Fira Code", "Fira Mono", monospace;
+  color: #c4b5fd;
+}
+
+.message-text pre {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  margin: 10px 0;
+}
+
+.message-text pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: 13px;
+  color: #d4d4d4;
+}
+
+.message-text ul,
+.message-text ol {
+  margin: 8px 0;
+  padding-left: 24px;
+}
+
+.message-text li {
+  margin-bottom: 4px;
+}
+
+.message-text h1,
+.message-text h2,
+.message-text h3,
+.message-text h4,
+.message-text h5,
+.message-text h6 {
+  color: #f0f0f0;
+  margin: 16px 0 8px 0;
+  font-weight: 600;
+}
+
+.message-text h1 { font-size: 20px; }
+.message-text h2 { font-size: 18px; }
+.message-text h3 { font-size: 16px; }
+.message-text h4 { font-size: 15px; }
+.message-text h5 { font-size: 14px; }
+.message-text h6 { font-size: 13px; }
+
+.message-text blockquote {
+  border-left: 3px solid rgba(167, 139, 250, 0.4);
+  padding-left: 14px;
+  margin: 10px 0;
+  color: #b0b0b0;
+  font-style: italic;
+}
+
+.message-text a {
+  color: #a78bfa;
+  text-decoration: underline;
+}
+
+.message-text hr {
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  margin: 16px 0;
+}
+
+.message-text table {
+  border-collapse: collapse;
+  margin: 10px 0;
+  width: 100%;
+}
+
+.message-text th,
+.message-text td {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 8px 12px;
+  text-align: left;
+  font-size: 14px;
+}
+
+.message-text th {
+  background: rgba(167, 139, 250, 0.08);
+  color: #c4b5fd;
+  font-weight: 600;
+}
+
 /* ========== Typing Indicator (Micro-interaction) ========== */
 
 .typing-indicator {
