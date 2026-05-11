@@ -63,7 +63,8 @@ function App() {
       try {
         await healthCheck();
         setHealthStatus("online");
-      } catch {
+      } catch (err) {
+        console.error("Health check failed:", err.message, err.response?.status, err.response?.data);
         setHealthStatus("offline");
       }
     }
@@ -278,7 +279,8 @@ function App() {
     try {
       await healthCheck();
       setHealthStatus("online");
-    } catch {
+    } catch (err) {
+      console.error("Health check failed:", err.message, err.response?.status, err.response?.data);
       setHealthStatus("offline");
     }
   }
