@@ -10,9 +10,9 @@ class Settings(BaseSettings):
     llm_provider: str = "local"
 
     # ── 本地 LLM 配置 ──
-    llm_base_url: str = "http://127.0.0.1:7239/v1"
-    llm_model: str = "lmstudio-community/Qwen3-8B-MLX-8bit"
-    llm_api_key: str = "mlx-studio"
+    llm_base_url: str = "http://10.0.0.59:1234/v1"
+    llm_model: str = "qwen3.6-35b-a3b-abliterated-heretic-mlx"
+    llm_api_key: str = "lm-studio"
 
     # ── 云端 LLM 配置（仅在 llm_provider="cloud" 时使用） ──
     cloud_llm_base_url: str = "https://api.deepseek.com"
@@ -20,8 +20,8 @@ class Settings(BaseSettings):
     cloud_llm_api_key: str = "sk-595f9fce6d5245cfa00168b760217d40"
 
     # ── Embedding 配置 ──
-    embedding_base_url: str = "http://127.0.0.1:1234/v1"
-    embedding_model: str = "text-embedding-nomic-embed-text-v1.5"
+    embedding_base_url: str = "http://10.0.0.59:1234/v1"
+    embedding_model: str = "text-embedding-qwen3-embedding-4b"
     embedding_api_key: str = "lm-studio"
 
     # ── Qdrant 配置 ──

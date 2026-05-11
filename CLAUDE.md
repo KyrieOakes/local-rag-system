@@ -34,11 +34,12 @@ Copy `.env.example` to `.env` before starting. The backend reads configuration f
 
 - `app/main.py` — App factory, CORS middleware (allows `:5173`), route registration
 - `app/api/` — Route handlers: `health.py` (`GET /health`), `documents.py` (`POST /upload`, `POST /upload-batch`, `GET /`, `DELETE /{source}`), `rag.py` (`POST /rag/query`)
-- `app/services/` — Business logic orchestration. `ingestion_service.py` wires loader → splitter → vectorstore; `rag_service.py` wires retriever → chain; `document_service.py` handles list/delete by querying Qdrant directly
+- `app/services/` — Business logic orchestration. `ingestion_service.py` wires loader → splitter → vectorstore; `rag_service.py` wires query_processor → retriever → chain; `document_service.py` handles list/delete by querying Qdrant directly
 - `app/rag/` — The RAG pipeline primitives:
   - `loader.py` — Loads PDF (PyPDF), TXT/MD (TextLoader) via LangChain document loaders
   - `splitter.py` — RecursiveCharacterTextSplitter with separators `["\n\n", "\n", "。", ".", " ", ""]`
   - `embeddings.py` — Wraps OpenAIEmbeddings pointed at a local embedding server (LM Studio / Ollama)
+  - `query_processor.py` — Pre-retrieval LLM call: intent detection (question_answering/summarization/comparison/fact_lookup) and query rewriting for better retrieval. Falls back to original query on failure.
   - `vectorstore.py` — QdrantVectorStore singleton; also contains `list_all_documents()` (scrolls all Qdrant points, groups by `metadata.source`) and `delete_document_by_source()` (filtered delete by `metadata.source`)
   - `retriever.py` — `similarity_search_with_score` against the vectorstore
   - `chain.py` — Builds a LangChain chain: `rag_prompt | llm | StrOutputParser`; formats retrieved documents with source/page headers
@@ -48,9 +49,11 @@ Copy `.env.example` to `.env` before starting. The backend reads configuration f
 - `app/schemas/` — Pydantic models: `QueryRequest`/`QueryResponse`/`SourceChunk` for RAG; `document.py` is an empty file
 - `app/utils/file_utils.py` — Validates file extension (`.pdf`, `.txt`, `.md`), saves uploads to `data/raw/` with UUID-based filenames (original filename preserved in Qdrant metadata as `source`)
 
-**Frontend** (`frontend/`) — React 19 + Vite, single-page chat UI:
+**Frontend** (`frontend/`) — React 19 + Vite, single-page chat UI with "Editorial Ink" dark theme:
 
-- `src/App.jsx` — Entire application in one component (sidebar, chat messages, upload modal, document manager modal). No router — all UI state managed via `useState`. Health check on mount, scroll-to-bottom on new messages, click-outside/Escape to close panels.
+- `src/App.jsx` — Entire application in one component (sidebar, chat messages, upload modal, document manager modal). No router — all UI state managed via `useState`. Health check on mount, scroll-to-bottom on new messages, click-outside/Escape to close panels. Uses SVG icons for file types and welcome hints; emoji avatars for message roles.
+- `src/App.css` — Complete design system with CSS custom properties (design tokens for colors, shadows, radii, transitions). Smoked-glass panels, refined typography, subtle ambient light bleeds. ~800 lines (down from ~2000).
+- `src/index.css` — Base reset, grain texture overlay, imports Plus Jakarta Sans (Google Fonts) with weight range 300–800.
 - `src/api.js` — Axios instance pointing at `http://127.0.0.1:8000`, exports `healthCheck`, `uploadDocument`, `uploadDocuments`, `queryRag`, `listDocuments`, `deleteDocument`
 - Frontend dependencies include `react-markdown` for rendering LLM Markdown responses
 

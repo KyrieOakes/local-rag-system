@@ -42,10 +42,10 @@ function App() {
   const docMgrPanelRef = useRef(null);
 
   const statusConfig = {
-    idle: { label: "Not Checked", color: "#6b7280" },
-    checking: { label: "Checking...", color: "#f59e0b" },
-    online: { label: "Online", color: "#22c55e" },
-    offline: { label: "Offline", color: "#ef4444" },
+    idle: { label: "Not Checked", color: "#5c5b64" },
+    checking: { label: "Checking…", color: "#fbbf24" },
+    online: { label: "Connected", color: "#4ade80" },
+    offline: { label: "Disconnected", color: "#f87171" },
   };
 
   useEffect(() => {
@@ -333,10 +333,36 @@ function App() {
   }
 
   function fileTypeIcon(fileType) {
-    if (fileType === ".pdf") return "📄";
-    if (fileType === ".txt") return "📝";
-    if (fileType === ".md") return "📋";
-    return "📁";
+    if (fileType === ".pdf") return (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+        <polyline points="14 2 14 8 20 8"></polyline>
+        <line x1="16" y1="13" x2="8" y2="13"></line>
+        <line x1="16" y1="17" x2="8" y2="17"></line>
+        <polyline points="10 9 9 9 8 9"></polyline>
+      </svg>
+    );
+    if (fileType === ".txt") return (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+        <polyline points="14 2 14 8 20 8"></polyline>
+        <line x1="16" y1="13" x2="8" y2="13"></line>
+        <line x1="16" y1="17" x2="8" y2="17"></line>
+      </svg>
+    );
+    if (fileType === ".md") return (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+        <polyline points="14 2 14 8 20 8"></polyline>
+        <path d="M8 13h2l1 3 1-5 1 5 1-3h2"></path>
+      </svg>
+    );
+    return (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
+        <polyline points="13 2 13 9 20 9"></polyline>
+      </svg>
+    );
   }
 
   function getRelevanceLabel(score) {
@@ -682,10 +708,15 @@ function App() {
               </div>
             ) : docsList.length === 0 ? (
               <div className="docmgr-empty">
-                <div className="docmgr-empty-icon">📭</div>
-                <p>No documents indexed yet.</p>
+                <div className="docmgr-empty-icon">
+                  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" opacity="0.5">
+                    <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" />
+                    <polyline points="13 2 13 9 20 9" />
+                  </svg>
+                </div>
+                <p>No documents indexed yet</p>
                 <p className="docmgr-hint">
-                  Upload documents first using the Upload panel.
+                  Use the Upload panel to add documents.
                 </p>
               </div>
             ) : (
@@ -821,13 +852,24 @@ function App() {
         <section className="messages-area">
           {messages.length === 0 && !loadingQuery && (
             <div className="welcome">
-              <div className="welcome-icon">🧠</div>
+              <div className="welcome-icon">
+                <svg width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="currentColor" strokeWidth="1.2" opacity="0.9">
+                  <circle cx="24" cy="24" r="20" stroke="rgba(167,139,250,0.25)" strokeWidth="2" />
+                  <path d="M16 28c0-6 3-12 8-12s8 6 8 12" strokeLinecap="round" />
+                  <path d="M18 24c0-3 2-7 6-7s6 4 6 7" strokeLinecap="round" />
+                  <circle cx="20" cy="21" r="1.2" fill="currentColor" stroke="none" />
+                  <circle cx="28" cy="21" r="1.2" fill="currentColor" stroke="none" />
+                  <path d="M20 26c1.5 1.2 3.5 2 5.5 1.5" strokeLinecap="round" />
+                  <line x1="16" y1="32" x2="32" y2="32" stroke="rgba(167,139,250,0.3)" strokeWidth="1" />
+                  <line x1="18" y1="35" x2="30" y2="35" stroke="rgba(167,139,250,0.2)" strokeWidth="0.8" />
+                </svg>
+              </div>
 
               <h1 className="welcome-title">Local RAG Assistant</h1>
 
               <p className="welcome-desc">
                 Upload documents to build your local knowledge base, then ask
-                me anything.
+                questions and get answers grounded in your own content.
               </p>
 
               <div className="welcome-hints">
@@ -835,28 +877,48 @@ function App() {
                   className="hint-item"
                   onClick={() => setInput("What documents are available?")}
                 >
-                  <span className="hint-icon">📄</span>
-                  What documents are available?
+                  <span className="hint-icon">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
+                      <polyline points="13 2 13 9 20 9"></polyline>
+                    </svg>
+                  </span>
+                  Browse available documents
                 </div>
 
                 <div
                   className="hint-item"
                   onClick={() =>
-                    setInput("Summarize the content of my documents.")
+                    setInput("Summarize the key points from my documents.")
                   }
                 >
-                  <span className="hint-icon">📝</span>
-                  Summarize the content
+                  <span className="hint-icon">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <line x1="8" y1="6" x2="21" y2="6"></line>
+                      <line x1="8" y1="12" x2="21" y2="12"></line>
+                      <line x1="8" y1="18" x2="21" y2="18"></line>
+                      <line x1="3" y1="6" x2="3.01" y2="6"></line>
+                      <line x1="3" y1="12" x2="3.01" y2="12"></line>
+                      <line x1="3" y1="18" x2="3.01" y2="18"></line>
+                    </svg>
+                  </span>
+                  Summarize the key points
                 </div>
 
                 <div
                   className="hint-item"
                   onClick={() =>
-                    setInput("Explain the main topics covered.")
+                    setInput("What are the main themes and topics covered?")
                   }
                 >
-                  <span className="hint-icon">🔍</span>
-                  Explain the main topics
+                  <span className="hint-icon">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <line x1="12" y1="16" x2="12" y2="12"></line>
+                      <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                    </svg>
+                  </span>
+                  Explore themes & topics
                 </div>
               </div>
             </div>
