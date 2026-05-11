@@ -2,19 +2,29 @@ import logging
 import time
 
 from app.rag.chain import generate_answer
+from app.rag.query_processor import process_query
 from app.rag.retriever import retrieve_relevant_documents
 from app.schemas.rag import QueryResponse, SourceChunk
 
 logger = logging.getLogger(__name__)
 
-# 定义RAG查询函数，接受用户问题和可选的top_k参数，返回包含答案和相关来源信息的QueryResponse对象
+
 def query_rag(question: str, top_k: int = 5) -> QueryResponse:
+    step2_start = time.perf_counter()
+    logger.info("[RAG][STEP 2] Query processing 开始")
+    processed = process_query(question)
+    retrieval_query = processed["rewritten_query"]
+    logger.info(
+        "[RAG][STEP 2] Query processing 完成，耗时 %.3fs, intent=%s",
+        time.perf_counter() - step2_start,
+        processed["intent"],
+    )
+
     retrieved_results = retrieve_relevant_documents(
-        question=question,
+        question=retrieval_query,
         top_k=top_k,
     )
 
-    # 从检索结果中提取文档列表，准备生成答案所需的上下文信息
     documents = [document for document, _score in retrieved_results]
 
     answer = generate_answer(
@@ -25,7 +35,6 @@ def query_rag(question: str, top_k: int = 5) -> QueryResponse:
     step6_start = time.perf_counter()
     logger.info("[RAG][STEP 6] 返回结果开始")
 
-    # 将检索结果中的文档内容、来源和评分信息封装为SourceChunk对象列表，作为答案的来源信息
     sources = [
         SourceChunk(
             content=document.page_content,
