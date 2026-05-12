@@ -15,6 +15,7 @@ openai==2.32.0
 # --- 向量数据库 & 数据处理 ---
 qdrant-client==1.17.1
 pypdf==6.10.2
+docx2txt
 numpy
 
 # --- 工具类 ---
