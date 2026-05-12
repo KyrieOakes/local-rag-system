@@ -1,131 +1,85 @@
 # 🧠 Local RAG System
 
-> **本地的智能助手** — 基于 RAG（检索增强生成）的企业级知识问答系统，完全运行在你的本地环境中，数据安全无忧。
+> 本地 RAG 知识问答系统 — 上传文档、批量摄入、智能检索、LLM 问答，全程本地运行。
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.136-informational)](https://fastapi.tiangolo.com)
-[![LangChain](https://img.shields.io/badge/LangChain-1.2.15-green)](https://langchain.com)
-[![Qdrant](https://img.shields.io/badge/Qdrant-latest-red)](https://qdrant.tech)
-[![React](https://img.shields.io/badge/React-19-61dafb)](https://react.dev)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-
----
-
-## ✨ 核心功能
-
-| 功能 | 说明 |
-|------|------|
-| 📄 **文档上传与索引** | 支持 PDF、TXT、Markdown 格式，自动切分并生成向量索引 |
-| 🔎 **智能检索与问答** | 基于 LLM + 向量检索，提供带来源引用的高质量回答 |
-| 🔌 **灵活的后端模型** | 支持本地 LLM（LM Studio / Ollama）与云端 API（DeepSeek 等）无缝切换 |
-| 🎨 **现代化聊天 UI** | 类似 ChatGPT 的交互界面，支持实时状态、来源查看、Top-K 调节 |
-| 🐳 **一键 Docker 部署** | 向量数据库 Qdrant 通过 Docker Compose 快速启动，后端 Python 原生运行 |
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.10+-blue?style=flat-square" alt="Python">
+  <img src="https://img.shields.io/badge/FastAPI-0.136-informational?style=flat-square" alt="FastAPI">
+  <img src="https://img.shields.io/badge/LangChain-1.2-green?style=flat-square" alt="LangChain">
+  <img src="https://img.shields.io/badge/Qdrant-latest-red?style=flat-square" alt="Qdrant">
+  <img src="https://img.shields.io/badge/React-19-61dafb?style=flat-square" alt="React">
+  <img src="https://img.shields.io/badge/License-MIT-yellow?style=flat-square" alt="License">
+</p>
 
 ---
 
-## 🏗️ 系统架构
+## ✨ 功能亮点
 
-```mermaid
-graph TB
-    subgraph "Frontend (React + Vite)"
-        UI[Chat UI]
-    end
+- **📥 文档上传** — 支持 PDF、TXT、Markdown、DOCX，上传后自动分块、向量化、入库
+- **📂 批量摄入** — `python ingest.py --input_dir data/engineering --batch_size 64`，递归扫描、批量 embedding、增量更新
+- **🔍 智能问答** — 意图识别 + 查询改写 + 向量检索 + LLM 生成，答案附带来源引用和相似度打分
+- **⚡ 批量 Embedding** — 一次 API 调用处理最多 64 条文本，比逐条调用快数倍
+- **♻️ 增量更新** — SQLite checksum 数据库，文件未改则跳过，改过的文件自动删旧换新
+- **📋 查询日志** — 每次问答完整记录到 `logs/history/rag_queries.jsonl`，方便评估和调试
+- **🎨 Editorial Ink 主题** — 深色设计系统，Plus Jakarta Sans 字体，烟熏玻璃面板
+- **🔌 本地/云端双模式** — LLM 和 Embedding 均支持 LM Studio / Ollama / DeepSeek 等 OpenAI 兼容 API
 
-    subgraph "Backend (FastAPI)"
-        API[API Layer]
-        ING[Ingestion Service]
-        RAG[RAG Service]
-    end
+---
 
-    subgraph "LLM Provider"
-        LOCAL[Local LLM<br/>LM Studio / Ollama]
-        CLOUD[Cloud LLM<br/>DeepSeek / OpenAI]
-    end
+## 🏗️ 架构
 
-    subgraph "Vector Database"
-        QD[Qdrant]
-    end
-
-    subgraph "Storage"
-        FS[(File System)]
-        EMB[(Embeddings)]
-        CHUNK[(Text Chunks)]
-    end
-
-    UI -->|HTTP| API
-    API --> ING
-    API --> RAG
-    ING -->|parse & chunk| FS
-    ING -->|embed & store| QD
-    RAG -->|retrieve| QD
-    RAG -->|generate| LOCAL
-    RAG -->|generate| CLOUD
-    QD --> EMB
-    QD --> CHUNK
 ```
-
-### 工作流程
-
-1. **文档上传** → 后端解析文件 → 文本分块 → 生成向量嵌入 → 存入 Qdrant
-2. **用户提问** → 向量检索 Top-K 相关片段 → 构建 Prompt → LLM 生成答案 → 返回带来源的回复
+Browser (:5173)
+    │
+    ▼
+FastAPI (:8000)
+    ├── /health                  健康检查
+    ├── /documents/upload        上传文档
+    ├── /documents               文档列表
+    ├── /documents/{source}      删除文档
+    └── /rag/query               RAG 问答 (top_k=5)
+    │
+    ▼
+RAG Pipeline
+    摄入: loader → splitter → batch_embedder → bulk_writer → Qdrant
+    问答: query_processor → retriever → prompt → LLM → answer + sources
+    日志: query_logger → terminal + logs/history/rag_queries.jsonl
+    │
+    ▼
+Qdrant (Docker, :6333)          LM Studio (:1234)
+  向量存储 + 语义检索             LLM + Embedding
+```
 
 ---
 
 ## 🚀 快速开始
 
-### 环境要求
+### 前置条件
 
-- Python 3.10+
-- Node.js 18+ & npm
-- Docker & Docker Compose（用于 Qdrant）
-- 本地 LLM 运行环境（可选，推荐 LM Studio 或 Ollama）
+- Python 3.10+ &nbsp;·&nbsp; Node.js 18+ &nbsp;·&nbsp; Docker
+- LM Studio（或 Ollama），加载 LLM 和 Embedding 模型
 
-### 1. 克隆并安装后端
+### 1. 安装依赖
 
 ```bash
-git clone <your-repo-url>
-cd local-rag-system
-
-# 创建虚拟环境
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# 或 venv\Scripts\activate  (Windows)
-
+git clone <repo-url> && cd local-rag-system
 pip install -r requirements.txt
 ```
 
-### 2. 启动 Qdrant 向量数据库
+### 2. 启动 Qdrant
 
 ```bash
 docker compose up -d
 ```
 
-### 3. 配置环境变量
+### 3. 配置环境
 
-复制 `.env.example` 为 `.env`，按需修改配置：
-
-```env
-# LLM 提供商: local / cloud
-LLM_PROVIDER=local
-
-# 本地 LLM 设置
-LLM_BASE_URL=http://127.0.0.1:1234/v1
-LLM_MODEL=qwen/qwen3-v1-8b
-LLM_API_KEY=lm-studio
-
-# Embedding 模型（LM Studio 兼容）
-EMBEDDING_BASE_URL=http://127.0.0.1:1234/v1
-EMBEDDING_MODEL=text-embedding-bge-small-zh-v1.5
-EMBEDDING_API_KEY=lm-studio
-
-# Qdrant 连接
-QDRANT_URL=http://127.0.0.1:6333
-QDRANT_COLLECTION=local_rag_docs
+```bash
+cp .env.example .env
+# 按需编辑 .env：LLM_BASE_URL、EMBEDDING_MODEL 等
 ```
 
-> **提示**：若使用云端 LLM（如 DeepSeek），将 `LLM_PROVIDER=cloud` 并配置 `CLOUD_LLM_*` 相关字段。
-
-### 4. 启动后端服务
+### 4. 启动后端
 
 ```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
@@ -134,12 +88,56 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ### 5. 启动前端
 
 ```bash
-cd frontend
-npm install
-npm run dev
+cd frontend && npm install && npm run dev
 ```
 
-浏览器打开 `http://localhost:5173`，即可开始使用。
+打开 `http://localhost:5173`。
+
+### 6. 批量摄入文档（可选）
+
+```bash
+# 首次全量摄入
+python ingest.py --input_dir data/engineering --batch_size 64
+
+# 再次运行仅处理变更文件（秒级完成）
+python ingest.py --input_dir data/engineering --batch_size 64
+```
+
+---
+
+## 📡 API 一览
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/health` | 健康检查 |
+| `GET` | `/documents` | 列出已索引文档 |
+| `POST` | `/documents/upload` | 上传单个文件 |
+| `POST` | `/documents/upload-batch` | 批量上传文件 |
+| `DELETE` | `/documents/{source}` | 删除文档及所有分块 |
+| `POST` | `/rag/query` | RAG 问答 |
+
+**问答示例：**
+
+```json
+// Request
+{ "question": "What is the Guild project about?" }
+
+// Response
+{
+  "question": "What is the Guild project about?",
+  "answer": "The Guild project is a cross-functional initiative...",
+  "sources": [
+    {
+      "content": "...",
+      "source": "guild_project.md",
+      "file_name": "guild_project.md",
+      "file_path": "data/engineering/projects/guild_project.md",
+      "chunk_index": 3,
+      "score": 0.86
+    }
+  ]
+}
+```
 
 ---
 
@@ -147,57 +145,77 @@ npm run dev
 
 ```
 local-rag-system/
-├── app/                    # 后端 Python 代码
-│   ├── api/                # FastAPI 路由 ( health, documents, rag )
-│   ├── core/               # 配置 & 日志
-│   ├── llm/                # LLM 对接层 ( 本地 / 云端 )
-│   ├── rag/                # RAG 核心 ( 加载, 分割, 嵌入, 检索, 链 )
-│   ├── schemas/            # Pydantic 数据模型
-│   ├── services/           # 业务逻辑 ( 文档, 摄取, RAG )
-│   ├── utils/              # 工具函数 ( 文件, ID )
-│   └── main.py             # FastAPI 应用入口
-├── frontend/               # React + Vite 前端
-│   ├── src/
-│   │   ├── App.jsx         # 主聊天界面
-│   │   ├── api.js          # 后端 API 封装
-│   │   └── ...
-│   └── package.json
-├── docker/                 # Dockerfile
-├── data/                   # 数据集 ( raw / processed )
-├── docs/                   # 文档 ( 架构, API 设计 )
-├── scripts/                # 辅助脚本 ( 数据摄入, 清库 )
-├── tests/                  # 单元测试
-├── docker-compose.yml      # Qdrant 容器编排
-├── requirements.txt        # Python 依赖
-└── .env.example            # 环境配置模板
+├── app/
+│   ├── api/                          FastAPI 路由
+│   ├── services/                     业务编排
+│   ├── rag/                          RAG 核心
+│   │   ├── loader.py                 文档加载 (PDF/TXT/MD/DOCX)
+│   │   ├── splitter.py               Markdown 标题切分 + 递归切分
+│   │   ├── embeddings.py             Embedding 模型
+│   │   ├── query_processor.py        意图识别 + 查询改写
+│   │   ├── query_logger.py           查询日志 (JSONL + terminal)
+│   │   ├── vectorstore.py            Qdrant 操作
+│   │   ├── retriever.py              向量检索
+│   │   ├── prompt.py                 System Prompt
+│   │   ├── chain.py                  答案生成链
+│   │   └── ingestion/                批量摄入 pipeline
+│   │       ├── checksum_store.py     SQLite MD5 校验
+│   │       ├── batch_embedder.py     批量 Embedding
+│   │       ├── bulk_writer.py        批量 Qdrant 写入
+│   │       └── ingest_pipeline.py    摄入编排
+│   ├── llm/                          LLM 工厂 (本地/云端)
+│   ├── core/                         配置 (pydantic-settings)
+│   ├── schemas/                      Pydantic 模型
+│   └── utils/                        工具函数
+├── frontend/                         React 19 + Vite
+├── ingest.py                         CLI 批量摄入脚本
+├── data/
+│   ├── raw/                          上传文件
+│   └── ingestion_state.db            Checksum 数据库
+├── logs/
+│   └── history/rag_queries.jsonl     查询历史
+├── docker-compose.yml                Qdrant 容器
+├── requirements.txt
+└── .env.example
 ```
-
----
-
-## 📡 API 文档
-
-| 方法 | 路径 | 描述 | 请求体 | 响应 |
-|------|------|------|--------|------|
-| `GET` | `/health` | 健康检查 | — | `{"status":"ok"}` |
-| `POST` | `/documents/upload` | 上传文档并索引 | `multipart/form-data` (file) | `{"message":"...", "filename":"...", "chunks": int}` |
-| `POST` | `/rag/query` | 基于知识库提问 | `{"question":"...", "top_k": 4}` | `{"answer":"...", "sources":[...]}` |
-
-> 详细 API 设计请参见 [docs/api_design.md](./docs/api_design.md)
 
 ---
 
 ## 🛠️ 技术栈
 
-| 层级 | 技术 | 用途 |
-|------|------|------|
-| **后端框架** | FastAPI + Uvicorn | 高性能异步 API |
-| **AI 框架** | LangChain + LangGraph | RAG 流程编排 |
-| **本地 LLM** | LM Studio / Ollama (OpenAI 兼容 API) | 推理 |
-| **云端 LLM** | DeepSeek / OpenAI | 替代推理源 |
-| **向量数据库** | Qdrant | 语义检索 |
-| **嵌入模型** | BGE (via LM Studio) | 文本向量化 |
-| **前端** | React 19 + Vite + Axios | 聊天界面 |
-| **容器化** | Docker + Docker Compose | Qdrant 部署 |
+| 层 | 技术 |
+|----|------|
+| 后端 | FastAPI + Uvicorn + LangChain |
+| 向量库 | Qdrant (Docker) |
+| LLM | qwen3-8b-mlx / DeepSeek（OpenAI 兼容 API） |
+| Embedding | text-embedding-qwen3-embedding-4b |
+| 文本处理 | PyPDF + Docx2txtLoader + MarkdownHeaderTextSplitter |
+| 前端 | React 19 + Vite + react-markdown + Axios |
+| 摄入 | `ingest.py` CLI + `app/rag/ingestion/` 模块 |
 
 ---
 
+## 📝 查询日志格式
+
+每次问答自动追加到 `logs/history/rag_queries.jsonl`：
+
+```json
+{
+  "timestamp": "2026-05-12 15:25:47",
+  "question": "what is it guild project about?",
+  "rewritten_query": "What is the Guild project mainly about?",
+  "intent": "question_answering",
+  "top_k": 5,
+  "retrieved_chunks": [
+    {
+      "rank": 1,
+      "content_preview": "...",
+      "file_name": "guild_project.md",
+      "file_path": "data/engineering/projects/guild_project.md",
+      "chunk_index": 3,
+      "score": 0.86
+    }
+  ],
+  "answer": "The Guild project is ..."
+}
+```
