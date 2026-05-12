@@ -48,7 +48,8 @@ Copy `.env.example` to `.env` before starting. The backend reads configuration f
   - `vectorstore.py` — QdrantVectorStore singleton; also contains `list_all_documents()` and `delete_document_by_source()`
   - `retriever.py` — `similarity_search_with_score` against the vectorstore
   - `chain.py` — Builds a LangChain chain: `rag_prompt | llm | StrOutputParser`
-  - `prompt.py` — System prompt template instructing the LLM to answer only from context
+  - `prompt.py` — System prompt template; instructs LLM to write natural flowing prose, grounded in context
+  - `query_logger.py` — Writes full query trace to `logs/history/rag_queries.jsonl` + brief terminal summary
   - `ingestion/` — Unified batch-ingestion pipeline:
     - `checksum_store.py` — SQLite-based MD5 checksum database for incremental updates
     - `batch_embedder.py` — Batch embedding via OpenAI-compatible `/v1/embeddings` (configurable batch_size)
