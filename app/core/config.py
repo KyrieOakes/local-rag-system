@@ -11,7 +11,7 @@ class Settings(BaseSettings):
 
     # ── 本地 LLM 配置 ──
     llm_base_url: str = "http://10.0.0.59:1234/v1"
-    llm_model: str = "qwen3.6-35b-a3b-abliterated-heretic-mlx"
+    llm_model: str = "qwen3-8b-mlx"
     llm_api_key: str = "lm-studio"
 
     # ── 云端 LLM 配置（仅在 llm_provider="cloud" 时使用） ──
