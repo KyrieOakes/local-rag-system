@@ -5,7 +5,7 @@ from fastapi import UploadFile
 
 # 定义上传文件的 保存目录 和 允许的 文件扩展名集合
 UPLOAD_DIR = Path("data/raw")
-ALLOWED_EXTENSIONS = {".pdf", ".txt", ".md"}
+ALLOWED_EXTENSIONS = {".pdf", ".txt", ".md", ".markdown", ".docx"}
 
 # 验证上传文件的扩展名是否在允许的范围内，如果不合法则抛出一个ValueError异常
 def validate_file_extension(filename: str) -> None:

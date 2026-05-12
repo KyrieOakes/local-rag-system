@@ -14,6 +14,10 @@ conda activate localrag
 # Backend (from repo root, with conda env activated)
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
+# Batch ingest local directories
+python ingest.py --input_dir data/engineering --batch_size 64
+python ingest.py --input_dir data/engineering --batch_size 32 --collection_name my_collection
+
 # Qdrant vector database
 docker compose up -d
 
@@ -34,20 +38,26 @@ Copy `.env.example` to `.env` before starting. The backend reads configuration f
 
 - `app/main.py` — App factory, CORS middleware (allows `:5173`), route registration
 - `app/api/` — Route handlers: `health.py` (`GET /health`), `documents.py` (`POST /upload`, `POST /upload-batch`, `GET /`, `DELETE /{source}`), `rag.py` (`POST /rag/query`)
-- `app/services/` — Business logic orchestration. `ingestion_service.py` wires loader → splitter → vectorstore; `rag_service.py` wires query_processor → retriever → chain; `document_service.py` handles list/delete by querying Qdrant directly
+- `app/services/` — Business logic orchestration. `ingestion_service.py` delegates to the unified `ingest_file_paths` pipeline; `rag_service.py` wires query_processor → retriever → chain; `document_service.py` handles list/delete by querying Qdrant directly
+- `ingest.py` — Standalone CLI script at repo root. `python ingest.py --input_dir <dir> --batch_size <n> [--collection_name <name>]`
 - `app/rag/` — The RAG pipeline primitives:
-  - `loader.py` — Loads PDF (PyPDF), TXT/MD (TextLoader) via LangChain document loaders
-  - `splitter.py` — RecursiveCharacterTextSplitter with separators `["\n\n", "\n", "。", ".", " ", ""]`
+  - `loader.py` — Loads PDF (PyPDF), TXT/MD (TextLoader), DOCX (Docx2txtLoader) via LangChain document loaders
+  - `splitter.py` — MarkdownHeaderTextSplitter (preserves H1/H2/H3 hierarchy) for .md/.markdown; RecursiveCharacterTextSplitter for all other types
   - `embeddings.py` — Wraps OpenAIEmbeddings pointed at a local embedding server (LM Studio / Ollama)
-  - `query_processor.py` — Pre-retrieval LLM call: intent detection (question_answering/summarization/comparison/fact_lookup) and query rewriting for better retrieval. Falls back to original query on failure.
-  - `vectorstore.py` — QdrantVectorStore singleton; also contains `list_all_documents()` (scrolls all Qdrant points, groups by `metadata.source`) and `delete_document_by_source()` (filtered delete by `metadata.source`)
+  - `query_processor.py` — Pre-retrieval LLM call: intent detection and query rewriting. Falls back to original query on failure.
+  - `vectorstore.py` — QdrantVectorStore singleton; also contains `list_all_documents()` and `delete_document_by_source()`
   - `retriever.py` — `similarity_search_with_score` against the vectorstore
-  - `chain.py` — Builds a LangChain chain: `rag_prompt | llm | StrOutputParser`; formats retrieved documents with source/page headers
+  - `chain.py` — Builds a LangChain chain: `rag_prompt | llm | StrOutputParser`
   - `prompt.py` — System prompt template instructing the LLM to answer only from context
-- `app/llm/local_llm.py` — `get_llm()` returns a `ChatOpenAI` instance, switching between local and cloud endpoints based on `LLM_PROVIDER` env var. **Known bug:** the `"local"` branch uses `cloud_llm_*` settings and the default fallback uses `llm_*` settings — the condition appears reversed.
+  - `ingestion/` — Unified batch-ingestion pipeline:
+    - `checksum_store.py` — SQLite-based MD5 checksum database for incremental updates
+    - `batch_embedder.py` — Batch embedding via OpenAI-compatible `/v1/embeddings` (configurable batch_size)
+    - `bulk_writer.py` — Bulk Qdrant `upsert` (all points in one call) + delete by `metadata.file_path`
+    - `ingest_pipeline.py` — Orchestration: scan → checksum classify → load → split → batch embed → bulk upsert
+- `app/llm/local_llm.py` — `get_llm()` returns a `ChatOpenAI` instance. **Known bug:** `"local"`/`"cloud"` branches are swapped.
 - `app/core/config.py` — `Settings` class loaded from `.env` via pydantic-settings
-- `app/schemas/` — Pydantic models: `QueryRequest`/`QueryResponse`/`SourceChunk` for RAG; `document.py` is an empty file
-- `app/utils/file_utils.py` — Validates file extension (`.pdf`, `.txt`, `.md`), saves uploads to `data/raw/` with UUID-based filenames (original filename preserved in Qdrant metadata as `source`)
+- `app/schemas/` — Pydantic models: `QueryRequest`/`QueryResponse`/`SourceChunk`
+- `app/utils/file_utils.py` — Validates file extension (`.pdf`, `.txt`, `.md`, `.markdown`, `.docx`), saves to `data/raw/` with UUID filenames
 
 **Frontend** (`frontend/`) — React 19 + Vite, single-page chat UI with "Editorial Ink" dark theme:
 

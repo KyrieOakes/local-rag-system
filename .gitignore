@@ -29,6 +29,7 @@ env/
 # Local data
 data/raw/*
 data/processed/*
+data/ingestion_state.db
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 
