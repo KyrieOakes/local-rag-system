@@ -53,5 +53,8 @@ temp/
 # Jupyter
 .ipynb_checkpoints/
 
+# Query history (user data, not code)
+logs/history/
+
 # Continue VSCode extension config
 .continue/
