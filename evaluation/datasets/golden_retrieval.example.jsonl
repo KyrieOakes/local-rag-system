@@ -1,0 +1,2 @@
+{"id":"example-001","question":"How does the retrieval pipeline work?","relevant_sources":[{"file_path":"data/engineering/ai/search/_index.md","text":"retrieval","relevance":2}]}
+{"id":"example-002","question":"Where is model evaluation discussed?","relevant_sources":[{"file_path":"data/engineering/ai/code-creation/code-suggestions-guide/model_evaluation_guide.md","relevance":3}]}
