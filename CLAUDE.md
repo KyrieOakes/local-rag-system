@@ -30,7 +30,16 @@ cd frontend && npm run lint      # ESLint
 pip install -r requirements.txt
 ```
 
-Copy `.env.example` to `.env` before starting. The backend reads configuration from `.env` via pydantic-settings. Tests exist in `tests/` but are empty skeleton files.
+Copy `.env.example` to `.env` before starting. The backend reads configuration from `.env` via pydantic-settings.
+
+```bash
+# Evaluation (offline retrieval quality assessment)
+python evaluation/run_retrieval_eval.py --dataset evaluation/datasets/golden_retrieval.example.jsonl --top-k 5 --experiment-name my-experiment
+jupyter notebook evaluation/retrieval_eval_pipeline.ipynb   # full pipeline + visualizations
+
+# Unit tests
+python -m unittest discover tests/
+```
 
 ## Architecture
 
@@ -67,6 +76,16 @@ Copy `.env.example` to `.env` before starting. The backend reads configuration f
 - `src/index.css` — Base reset, grain texture overlay, imports Plus Jakarta Sans (Google Fonts) with weight range 300–800.
 - `src/api.js` — Axios instance pointing at `http://127.0.0.1:8000`, exports `healthCheck`, `uploadDocument`, `uploadDocuments`, `queryRag`, `listDocuments`, `deleteDocument`
 - Frontend dependencies include `react-markdown` for rendering LLM Markdown responses
+
+**Evaluation** (`evaluation/`) — Offline retrieval quality assessment:
+
+- `run_retrieval_eval.py` — CLI runner: loads golden JSONL dataset, calls production retriever, outputs `retrieval-eval-v1` JSON report
+- `retrieval_eval_pipeline.ipynb` — Jupyter notebook: full test pipeline with 7 visualization charts (per-question bar charts, aggregate dashboard, radar chart, top-K sensitivity, correlation heatmap, recall-vs-precision scatter). Supports live and demo modes.
+- `retrieval_metrics/metrics.py` — Core retrieval metrics: Recall@K, Precision@K, MRR, NDCG@K, context_redundancy@K
+- `retrieval_metrics/matching.py` — Maps golden source/snippet labels to concrete chunk IDs (file_path, source, text-snippet matching)
+- `retrieval_metrics/evaluator.py` — Unified `evaluate_retrieval_case()` producing grouped `core_metrics` + `context_quality`
+- `datasets/golden_retrieval.example.jsonl` — 22 annotated question→relevant_sources examples covering 8 topic areas
+- Visualization dependencies: `matplotlib`, `seaborn`, `pandas`, `jupyter`, `nbconvert`
 
 **Infrastructure:**
 - Qdrant runs via Docker Compose, data persisted to `qdrant_storage/`
