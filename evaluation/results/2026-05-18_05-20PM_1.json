@@ -1,12 +1,18 @@
 {
   "report_schema": "retrieval-eval-v1",
   "experiment_name": "notebook-run",
-  "created_at": "2026-05-18T16:18:01",
+  "created_at": "2026-05-18T17:20:56",
   "evaluation_layer": "retrieval",
-  "dataset": "datasets/golden_retrieval.example.jsonl",
+  "dataset": "evaluation/datasets/golden_retrieval.example.jsonl",
   "top_k": 5,
   "mode": "live",
   "num_questions": 22,
+  "settings_snapshot": {
+    "qdrant_collection": "local_rag_docs",
+    "chunk_size": 800,
+    "chunk_overlap": 120,
+    "embedding_model": "text-embedding-qwen3-embedding-4b"
+  },
   "aggregate": {
     "core_metrics": {
       "recall@5_mean": 0.5909,

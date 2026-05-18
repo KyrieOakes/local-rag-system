@@ -30,12 +30,15 @@ cd frontend && npm run lint      # ESLint
 pip install -r requirements.txt
 ```
 
-Copy `.env.example` to `.env` before starting. The backend reads configuration from `.env` via pydantic-settings.
+Copy `.env.example` to `.env` before starting. The backend reads configuration from `.env` via pydantic-settings — `.env` values override defaults in `app/core/config.py`. All modules import the global `settings` singleton.
 
 ```bash
+# Reset vector DB + checksum store (required when changing embedding/chunking config)
+python scripts/clear_qdrant.py && rm -f data/ingestion_state.db
+
 # Evaluation (offline retrieval quality assessment)
 python evaluation/run_retrieval_eval.py --dataset evaluation/datasets/golden_retrieval.example.jsonl --top-k 5 --experiment-name my-experiment
-jupyter notebook evaluation/retrieval_eval_pipeline.ipynb   # full pipeline + visualizations
+jupyter notebook evaluation/retrieval_eval_pipeline.ipynb   # full pipeline + strategy comparison
 
 # Unit tests
 python -m unittest discover tests/
@@ -62,9 +65,9 @@ python -m unittest discover tests/
   - `ingestion/` — Unified batch-ingestion pipeline:
     - `checksum_store.py` — SQLite-based MD5 checksum database for incremental updates
     - `batch_embedder.py` — Batch embedding via OpenAI-compatible `/v1/embeddings` (configurable batch_size)
-    - `bulk_writer.py` — Bulk Qdrant `upsert` (all points in one call) + delete by `metadata.file_path`
+    - `bulk_writer.py` — Bulk Qdrant `upsert` + auto-create collection if missing (infers vector_size from first embedding) + delete by `metadata.file_path`
     - `ingest_pipeline.py` — Orchestration: scan → checksum classify → load → split → batch embed → bulk upsert
-- `app/llm/local_llm.py` — `get_llm()` returns a `ChatOpenAI` instance. **Known bug:** `"local"`/`"cloud"` branches are swapped.
+- `app/llm/local_llm.py` — `get_llm()` returns a `ChatOpenAI` instance. `"local"` → local LM Studio/Ollama config; `"cloud"` → cloud API config.
 - `app/core/config.py` — `Settings` class loaded from `.env` via pydantic-settings
 - `app/schemas/` — Pydantic models: `QueryRequest`/`QueryResponse`/`SourceChunk`
 - `app/utils/file_utils.py` — Validates file extension (`.pdf`, `.txt`, `.md`, `.markdown`, `.docx`), saves to `data/raw/` with UUID filenames
@@ -79,13 +82,23 @@ python -m unittest discover tests/
 
 **Evaluation** (`evaluation/`) — Offline retrieval quality assessment:
 
-- `run_retrieval_eval.py` — CLI runner: loads golden JSONL dataset, calls production retriever, outputs `retrieval-eval-v1` JSON report
-- `retrieval_eval_pipeline.ipynb` — Jupyter notebook: full test pipeline with 7 visualization charts (per-question bar charts, aggregate dashboard, radar chart, top-K sensitivity, correlation heatmap, recall-vs-precision scatter). Supports live and demo modes.
+- `run_retrieval_eval.py` — CLI runner: loads golden JSONL dataset, calls production retriever, outputs `retrieval-eval-v1` JSON report with `settings_snapshot` (chunk_size, embedding_model, etc.)
+- `retrieval_eval_pipeline.ipynb` — Jupyter notebook: full test pipeline with 16 visualization charts across two sections:
+  - Sections 1–15: Single-experiment pipeline (per-question bar charts, aggregate dashboard, radar chart, top-K sensitivity, correlation heatmap, recall-vs-precision scatter, auto-diagnosis)
+  - Section 16: **Multi-experiment strategy comparison** (comparison table with config metadata, core metrics bar chart, context quality chart, radar overlay, recall-vs-precision trade-off, per-question sensitivity heatmap). Auto-loads all reports from `evaluation/results/` and displays `chunk_size`/`embedding_model` from each report's `settings_snapshot`.
+  - Supports live mode (real Qdrant + embedding) and demo mode (synthetic data for offline visualization testing)
 - `retrieval_metrics/metrics.py` — Core retrieval metrics: Recall@K, Precision@K, MRR, NDCG@K, context_redundancy@K
 - `retrieval_metrics/matching.py` — Maps golden source/snippet labels to concrete chunk IDs (file_path, source, text-snippet matching)
 - `retrieval_metrics/evaluator.py` — Unified `evaluate_retrieval_case()` producing grouped `core_metrics` + `context_quality`
 - `datasets/golden_retrieval.example.jsonl` — 22 annotated question→relevant_sources examples covering 8 topic areas
 - Visualization dependencies: `matplotlib`, `seaborn`, `pandas`, `jupyter`, `nbconvert`
+
+**Strategy comparison workflow** (for embedding/chunking/top-k experiments):
+1. Modify `.env` (embedding_model, chunk_size, etc.)
+2. `python scripts/clear_qdrant.py && rm -f data/ingestion_state.db` — full reset
+3. `python ingest.py --input_dir data/engineering --batch_size 64` — re-ingest
+4. `python evaluation/run_retrieval_eval.py --dataset ... --experiment-name <strategy-name>` — evaluate
+5. Repeat 1-4 with different configs, then open notebook → Restart & Run All → scroll to §16
 
 **Infrastructure:**
 - Qdrant runs via Docker Compose, data persisted to `qdrant_storage/`

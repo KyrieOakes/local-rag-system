@@ -16,7 +16,7 @@ from app.core.config import settings
 
 
 def get_llm() -> ChatOpenAI:
-    if settings.llm_provider == "local":
+    if settings.llm_provider == "cloud":
         return ChatOpenAI(
             model=settings.cloud_llm_model,
             base_url=settings.cloud_llm_base_url,

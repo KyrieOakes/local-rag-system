@@ -17,7 +17,14 @@ import logging
 import uuid
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Filter, FieldCondition, MatchValue, PointStruct
+from qdrant_client.models import (
+    Distance,
+    Filter,
+    FieldCondition,
+    MatchValue,
+    PointStruct,
+    VectorParams,
+)
 
 from app.core.config import settings
 
@@ -94,6 +101,15 @@ def bulk_upsert_chunks(
 
     client = _get_client()
     collection = collection_name or settings.qdrant_collection
+
+    # ── 集合不存在时自动创建（clear_qdrant 后首次摄入）──
+    if not client.collection_exists(collection_name=collection):
+        vector_size = len(embeddings[0])
+        client.create_collection(
+            collection_name=collection,
+            vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+        )
+        logger.info("Created collection '%s' (vector_size=%d)", collection, vector_size)
 
     points = []
     for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
