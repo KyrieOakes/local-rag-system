@@ -19,7 +19,7 @@ def rag_query(request: QueryRequest):
         logger.info("[RAG][STEP 1] 用户输入接收完成，耗时 %.3fs", time.perf_counter() - step1_start)
         return query_rag(
             question=request.question,
-            top_k=request.top_k,
+            top_k=5,
         )
 
     except Exception as error:

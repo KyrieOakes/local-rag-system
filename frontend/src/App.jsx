@@ -14,7 +14,6 @@ function App() {
   const [healthStatus, setHealthStatus] = useState("idle");
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
-  const [topK, setTopK] = useState(4);
   const [loadingQuery, setLoadingQuery] = useState(false);
 
   const [showSidebar, setShowSidebar] = useState(false);
@@ -232,7 +231,7 @@ function App() {
     ]);
 
     try {
-      const data = await queryRag(text, topK);
+      const data = await queryRag(text);
 
       setMessages((prev) =>
         prev.map((msg) =>
@@ -438,19 +437,6 @@ function App() {
             </span>
           </button>
 
-          <div className="sidebar-item">
-            <span className="item-label">Top K</span>
-            <div className="topk-control">
-              <input
-                type="range"
-                min="1"
-                max="10"
-                value={topK}
-                onChange={(e) => setTopK(Number(e.target.value))}
-              />
-              <span className="topk-value">{topK}</span>
-            </div>
-          </div>
         </div>
 
         <div className="sidebar-section">

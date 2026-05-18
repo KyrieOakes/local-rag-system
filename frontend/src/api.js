@@ -37,12 +37,8 @@ export async function uploadDocuments(files) {
   return res.data;
 }
 
-export async function queryRag(question, topK = 4) {
-  const res = await api.post('/rag/query', {
-    question,
-    top_k: topK,
-  });
-
+export async function queryRag(question) {
+  const res = await api.post('/rag/query', { question });
   return res.data;
 }
 
