@@ -1,9 +1,19 @@
+"""
+文件上传工具模块。
+
+提供文件上传的安全处理：
+- validate_file_extension() — 校验文件扩展名是否在允许列表中（.pdf/.txt/.md/.markdown/.docx）
+- build_safe_filename() — 用 UUID + 原扩展名生成唯一文件名，防止文件名冲突
+- save_upload_file() — 异步保存上传文件到 data/raw/ 目录，返回保存后的绝对路径
+
+所有上传文件以 UUID 命名存储，原始文件名通过 metadata 保存在 Qdrant 中。
+"""
+
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import UploadFile
 
-# 定义上传文件的 保存目录 和 允许的 文件扩展名集合
 UPLOAD_DIR = Path("data/raw")
 ALLOWED_EXTENSIONS = {".pdf", ".txt", ".md", ".markdown", ".docx"}
 

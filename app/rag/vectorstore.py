@@ -1,3 +1,16 @@
+"""
+Qdrant 向量数据库访问模块。
+
+提供 Qdrant 向量存储的完整访问接口：
+- get_vectorstore() — 获取已有集合的 QdrantVectorStore 实例（用于检索）
+- create_vectorstore_from_documents() — 从文档列表创建/追加到 Qdrant 集合（已弃用，
+  推荐使用 bulk_writer 的批量 upsert）
+- list_all_documents() — 列出所有已索引的文档（按 source 分组，返回文件名、类型、分块数）
+- delete_document_by_source() — 按原始文件名删除文档的所有分块
+
+底层通过 qdrant_client 直接操作 Qdrant，不使用 LangChain 封装。
+"""
+
 from qdrant_client import QdrantClient
 from qdrant_client.models import Filter, FieldCondition, MatchValue
 from langchain_qdrant import QdrantVectorStore

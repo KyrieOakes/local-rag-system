@@ -1,0 +1,1 @@
+"""services 子包 — 业务逻辑编排层（ingestion / document / rag 服务）。"""

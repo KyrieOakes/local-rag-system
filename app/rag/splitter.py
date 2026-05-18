@@ -1,3 +1,16 @@
+"""
+文档切分器模块。
+
+根据文件类型采用不同的切分策略：
+- Markdown 文件（.md / .markdown）：先用 MarkdownHeaderTextSplitter 按 H1/H2/H3
+  标题层级切分（保留标题层级元数据），再用 RecursiveCharacterTextSplitter 对
+  超过 chunk_size 的段落进一步切分
+- 其他文件类型（.pdf / .txt / .docx）：直接使用 RecursiveCharacterTextSplitter 切分，
+  分隔符优先级为：\n\n → \n → 。 → . → 空格 → 字符
+
+chunk_size 和 chunk_overlap 从 settings 读取（默认 800/120）。
+"""
+
 from langchain_text_splitters import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter
 from langchain_core.documents import Document
 

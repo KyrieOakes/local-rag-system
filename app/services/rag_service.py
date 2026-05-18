@@ -1,3 +1,17 @@
+"""
+RAG 查询服务层（核心编排）。
+
+query_rag() 编排完整的 RAG 查询流水线，共 6 步：
+STEP 1 — 接收用户输入（在 API 层完成）
+STEP 2 — 查询预处理：意图检测 + 查询改写（query_processor）
+STEP 3 — 向量检索：从 Qdrant 检索 top_k 个最相关文档块（retriever）
+STEP 4 — 构建提示词（chain）
+STEP 5 — LLM 生成答案（chain）
+STEP 6 — 组装响应 + 记录日志（query_logger）
+
+返回 QueryResponse，包含原始问题、生成的答案和检索到的来源列表。
+"""
+
 import logging
 import time
 

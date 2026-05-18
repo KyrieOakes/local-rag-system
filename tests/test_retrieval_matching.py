@@ -1,3 +1,16 @@
+"""
+检索匹配逻辑单元测试。
+
+测试 evaluation/retrieval_metrics/matching.py 的匹配函数：
+- 按 file_path + text 片段匹配检索结果
+- 未匹配的标注保留在 relevance_scores 中（供 NDCG 理想排序用）
+- 无 chunk_index 时使用内容哈希生成 ID
+- 文本匹配对大小写和空白容忍
+- 按 source/file_name 匹配（无需 file_path）
+- 错误文件+正确片段不算匹配
+
+运行：python -m unittest tests.test_retrieval_matching
+"""
 import unittest
 
 from evaluation.retrieval_metrics.matching import (

@@ -1,3 +1,26 @@
+"""
+核心检索指标实现模块。
+
+实现的指标（所有函数均为纯函数，无副作用）：
+
+召回率与精确率：
+- recall_at_k() — Recall@K：相关文档中有多少出现在前 K 个检索结果中
+- precision_at_k() — Precision@K：前 K 个检索结果中有多少是相关的
+
+排名质量：
+- reciprocal_rank() — 首个相关文档的排名倒数（RR）
+- mrr() — reciprocal_rank 的别名（单次查询）
+- mean_reciprocal_rank() — 多查询的平均倒数排名（MRR）
+- ndcg_at_k() — 归一化折损累计增益@K，支持二值相关性（默认）和分级相关性评分
+
+上下文质量：
+- context_redundancy_at_k() — 上下文冗余度分析，返回三个指标：
+  - context_redundancy@K（整体冗余率）、irrelevant_rate@K（不相关率）、
+    duplicate_rate@K（重复率）
+
+所有 @K 函数要求 k > 0。
+"""
+
 from __future__ import annotations
 
 import math

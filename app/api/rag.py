@@ -1,3 +1,13 @@
+"""
+RAG 查询 API 路由模块。
+
+提供 POST /rag/query 端点，接收用户问题并返回：
+- answer: LLM 基于检索到的文档块生成的回答
+- sources: 检索到的文档块列表，包含内容、来源、相关性评分
+
+这是整个 RAG 系统对外的核心接口，串联了查询处理→向量检索→答案生成→日志记录的完整流水线。
+"""
+
 import logging
 import time
 

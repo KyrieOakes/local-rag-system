@@ -1,3 +1,18 @@
+"""
+文件校验和存储模块（增量摄取核心）。
+
+基于 SQLite 的 MD5 校验和数据库，用于实现增量文档摄取：
+- init_db() — 初始化 file_checksums 表（file_path, md5, last_ingested_at, chunk_count, collection_name）
+- ChecksumStore 类 — 提供 get/upsert/delete/all 方法管理文件校验记录
+
+工作流：每次摄取前计算文件 MD5，与数据库中已有记录比对：
+- 未匹配到 → 新文件，需摄取
+- MD5 相同 → 未变更，跳过
+- MD5 不同 → 文件已变更，删除旧分块后重新摄取
+
+数据库文件路径：data/ingestion_state.db，使用 WAL 模式提供更好的并发性能。
+"""
+
 import sqlite3
 import time
 from pathlib import Path

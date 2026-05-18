@@ -1,6 +1,16 @@
+"""
+RAG 查询的请求/响应 Pydantic 模型。
+
+定义三个数据模型：
+- QueryRequest — 用户查询请求（包含 question 字段，最少 1 个字符）
+- SourceChunk — 检索到的文档块信息（内容、来源、文件名、路径、页码、评分）
+- QueryResponse — RAG 查询完整响应（问题、答案、文档块列表）
+
+这些模型同时用于 FastAPI 的自动文档生成（response_model）和请求校验。
+"""
+
 from pydantic import BaseModel, Field
 
-# RAG 的请求和响应模型
 class QueryRequest(BaseModel):
     question: str = Field(..., min_length=1, description="User question")
 

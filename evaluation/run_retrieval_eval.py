@@ -1,3 +1,23 @@
+"""
+离线检索评估 CLI 运行器。
+
+加载 Golden JSONL 数据集，对每个测试问题调用生产环境的检索器，
+将检索结果与标注的相关文档进行比对，输出结构化评估报告。
+
+用法：
+    python evaluation/run_retrieval_eval.py --dataset evaluation/datasets/golden_retrieval.example.jsonl --top-k 5 --experiment-name my-experiment
+
+评估流程：
+1. 加载 JSONL 数据集（每行一个测试用例：question + relevant_sources）
+2. 可选启用 query_processor 进行查询改写
+3. 调用 production retriever 检索 top_k 个文档块
+4. 使用 retrieval_metrics 框架计算：Recall@K, Precision@K, MRR, NDCG@K,
+   context_redundancy@K 等指标
+5. 输出 JSON 报告到 evaluation/results/
+
+报告包含每个问题的详细评分和全数据集汇总（聚合平均值）。
+"""
+
 from __future__ import annotations
 
 import argparse

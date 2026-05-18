@@ -1,3 +1,22 @@
+"""
+统一摄取流水线编排模块。
+
+提供两个入口函数，编排完整的摄取流程：
+
+1. ingest_directory() — CLI 批量摄取入口（ingest.py 调用）
+   流程：扫描目录 → MD5 分类（新增/变更/未变更）→ 加载 → 切分 → 批量嵌入 → 批量写入 Qdrant → 更新校验和
+
+2. ingest_file_paths() — API 摄取入口（文档上传接口调用）
+   流程：计算 MD5 → 比对跳过未变更 → 加载切分 → 嵌入 → 写入 → 更新校验和
+
+增量更新策略：
+- 新文件：直接加载并写入
+- 变更文件：先通过 delete_chunks_by_filepath 删除旧分块，再重新摄取
+- 未变更文件：跳过，节省嵌入计算成本
+
+支持的文件类型：.md / .markdown / .txt / .pdf / .docx
+"""
+
 import hashlib
 import logging
 import time

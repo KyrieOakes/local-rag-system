@@ -1,3 +1,15 @@
+"""
+文档加载器模块。
+
+根据文件扩展名选择合适的 LangChain 文档加载器：
+- .pdf → PyPDFLoader
+- .txt / .md / .markdown → TextLoader（UTF-8 编码）
+- .docx → Docx2txtLoader
+
+load_document() 返回 LangChain Document 对象列表（PDF/DOCX 可能有多页/多段）。
+不支持的文件类型会抛出 ValueError。
+"""
+
 from pathlib import Path
 
 from langchain_community.document_loaders import PyPDFLoader, TextLoader, Docx2txtLoader

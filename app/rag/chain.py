@@ -1,3 +1,15 @@
+"""
+RAG 答案生成模块（Chain）。
+
+负责 RAG 流水线的第 4-5 步：
+1. format_documents_for_context() — 将检索到的文档列表格式化为 LLM 提示词所需的上下文字符串，
+   每个文档块附带来源信息（source、page）
+2. generate_answer() — 构建 LangChain 链（rag_prompt | llm | StrOutputParser），
+   调用 LLM 基于上下文生成自然语言答案
+
+生成的答案是自然流畅的段落式散文，而非分点列表。
+"""
+
 import logging
 import time
 

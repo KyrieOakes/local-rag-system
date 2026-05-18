@@ -1,3 +1,16 @@
+"""
+检索指标单元测试。
+
+测试 evaluation/retrieval_metrics/metrics.py 中的所有指标函数：
+- Recall@K / Precision@K：基本命中计算、截断边界行为、无相关文档时的零分母处理
+- Context Redundancy@K：不相关率、重复率、完全干净上下文的零冗余
+- MRR：首个相关文档排名、无命中为零、rank=1 最优情况
+- Mean Reciprocal Rank：多查询平均、输入长度不匹配校验
+- NDCG@K：二值相关性、分级相关性评分
+- k 参数校验：所有 @K 函数拒绝 k ≤ 0
+
+运行：python -m unittest tests.test_retrieval_metrics
+"""
 import math
 import unittest
 

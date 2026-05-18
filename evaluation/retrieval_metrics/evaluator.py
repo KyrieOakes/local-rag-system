@@ -1,3 +1,16 @@
+"""
+统一评估器模块。
+
+evaluate_retrieval_case() 将一个检索案例的评估流程封装为一次调用：
+1. 调用 match_retrieved_to_relevant_sources() 匹配检索结果与标注
+2. 计算 core_metrics（4 项）：
+   - recall@K, precision@K, MRR, NDCG@K
+3. 计算 context_quality（3 项）：
+   - context_redundancy@K, irrelevant_rate@K, duplicate_rate@K
+
+返回 RetrievalEvaluationResult 数据类，包含分组指标和匹配信息。
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence

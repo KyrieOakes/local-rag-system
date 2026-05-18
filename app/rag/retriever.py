@@ -1,3 +1,14 @@
+"""
+向量检索器模块（RAG 流水线第 3 步）。
+
+retrieve_relevant_documents() 对用户查询（或改写后的查询）执行向量相似度搜索，
+从 Qdrant 向量数据库中检索 top_k 个最相关的文档块。
+返回 list[tuple[Document, float]]——每个元组包含文档对象和余弦相似度评分。
+
+检索使用 Qdrant 的 similarity_search_with_score 方法，
+结合嵌入模型将查询文本转为向量后在向量空间中搜索最近邻。
+"""
+
 import logging
 import time
 

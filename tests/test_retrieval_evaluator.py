@@ -1,3 +1,13 @@
+"""
+统一评估器单元测试。
+
+测试 evaluation/retrieval_metrics/evaluator.py 的 evaluate_retrieval_case()：
+- 验证返回的指标分组结构（core_metrics + context_quality）
+- 验证重复和无关上下文被 context_redundancy 指标正确惩罚
+- 验证完全未命中时所有检索质量指标归零
+
+运行：python -m unittest tests.test_retrieval_evaluator
+"""
 import unittest
 
 from evaluation.retrieval_metrics.evaluator import evaluate_retrieval_case

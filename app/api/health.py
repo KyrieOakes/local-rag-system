@@ -1,6 +1,12 @@
+"""
+健康检查 API 路由模块。
+
+提供 GET /health 端点，返回 {"status": "ok"}。
+用于前端检测后端服务是否在线，前端启动时会自动调用此接口并显示连接状态。
+"""
+
 from fastapi import APIRouter
 
-# 定义一个APIRouter实例，设置路由的前缀为"/health"和标签为"Health"，用于处理与健康检查相关的API请求
 router = APIRouter(prefix="/health", tags=["Health"])
 
 

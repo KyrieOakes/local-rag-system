@@ -1,3 +1,15 @@
+"""
+文档管理 API 路由模块。
+
+提供以下端点：
+- POST /documents/upload — 上传单个文档并触发摄取流水线（加载→切分→嵌入→写入 Qdrant）
+- POST /documents/upload-batch — 批量上传多个文档
+- GET /documents — 列出所有已索引的文档（按 source 分组，返回分块数量）
+- DELETE /documents/{source} — 按文件名删除文档的所有分块（同时删除本地文件）
+
+所有上传的文件会先被校验扩展名，再以 UUID 文件名保存到 data/raw/。
+"""
+
 from typing import List
 
 from fastapi import APIRouter, File, HTTPException, UploadFile, Body
@@ -6,7 +18,6 @@ from app.services.ingestion_service import ingest_document
 from app.services.document_service import list_documents, delete_document
 from app.utils.file_utils import save_upload_file
 
-# 定义一个APIRouter实例，设置路由的前缀为"/documents"和标签为"Documents"，用于处理与文档相关的API请求
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
 # 定义一个POST请求的路由处理函数，路径为"/upload"，用于处理文档上传的请求，

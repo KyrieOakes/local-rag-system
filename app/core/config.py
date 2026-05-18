@@ -1,3 +1,18 @@
+"""
+应用配置模块。
+
+使用 pydantic-settings 从 .env 文件加载所有配置项，提供类型安全的设置访问。
+配置项分组：
+- LLM Provider 选择：local（LM Studio/Ollama）vs cloud（云端 API）
+- 本地 LLM 配置：base_url、model、api_key
+- 云端 LLM 配置：base_url、model、api_key
+- Embedding 配置：嵌入模型的服务地址和模型名
+- Qdrant 配置：向量数据库地址和集合名称
+- 文本切分配置：chunk_size（分块大小）和 chunk_overlap（重叠大小）
+
+全局单例 settings 在模块底部创建，所有模块通过 `from app.core.config import settings` 引用。
+"""
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 

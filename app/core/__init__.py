@@ -1,0 +1,1 @@
+"""core 子包 — 应用配置（config）和日志（logging）基础设施。"""

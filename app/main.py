@@ -1,3 +1,15 @@
+"""
+FastAPI 应用程序入口。
+
+职责：
+- 创建 FastAPI 应用实例，配置 CORS 中间件（允许前端 :5173 的跨域请求）
+- 注册三个路由模块：health（健康检查）、documents（文档管理）、rag（RAG 查询）
+- 提供根路径 / 的欢迎信息
+- 配置全局日志格式
+
+这是整个后端服务的启动文件，通过 uvicorn 运行。
+"""
+
 import logging
 
 from fastapi import FastAPI

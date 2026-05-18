@@ -1,7 +1,15 @@
+"""
+文档摄取服务层。
+
+对上传 API 提供单文档摄取封装：
+ingest_document() 委托给 ingest_file_paths() 流水线，
+通过 source_map 将 UUID 文件名映射回用户上传的原始文件名，
+确保 Qdrant 中存储的 source 字段为用户可读的文件名。
+"""
+
 from app.rag.ingestion.ingest_pipeline import ingest_file_paths
 
 
-# 处理文档的摄取过程，使用统一的 batch-embed + bulk-upsert pipeline
 def ingest_document(file_path: str, original_filename: str) -> dict:
     result = ingest_file_paths(
         file_paths=[file_path],

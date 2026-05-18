@@ -1,9 +1,17 @@
+"""
+文档管理服务层。
+
+提供文档列表和删除的业务逻辑：
+- list_documents() — 委托给 vectorstore.list_all_documents()，列出所有已索引文档
+- delete_document() — 先调用 vectorstore.delete_document_by_source() 删除 Qdrant 分块，
+  再尝试删除 data/raw/ 中的本地文件（如果存在）
+"""
+
 import os
 from pathlib import Path
 
 from app.rag.vectorstore import list_all_documents, delete_document_by_source
 
-# 定义数据目录，与 file_utils.py 中的 UPLOAD_DIR 保持一致
 DATA_DIR = Path("data/raw")
 
 

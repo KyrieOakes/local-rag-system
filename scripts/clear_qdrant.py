@@ -1,3 +1,12 @@
+"""
+Qdrant 集合清理脚本。
+
+删除指定的 Qdrant 集合（默认 local_rag_docs），清空所有已索引的文档向量。
+用于开发/测试时重置向量数据库状态。
+
+警告：此操作不可逆，所有已索引的文档分块将永久丢失。
+"""
+
 from qdrant_client import QdrantClient
 from qdrant_client.http.exceptions import UnexpectedResponse
 

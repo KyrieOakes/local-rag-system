@@ -1,0 +1,1 @@
+"""api 子包 — FastAPI 路由模块集合（health / documents / rag）。"""

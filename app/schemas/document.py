@@ -1,0 +1,1 @@
+"""文档相关的 Pydantic 模型占位模块 — 当前文档模型定义在 rag.py 和 vectorstore 返回的 dict 中。"""

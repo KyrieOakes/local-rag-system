@@ -1,3 +1,16 @@
+"""
+RAG 系统提示词模板模块。
+
+定义 RAG_SYSTEM_PROMPT（系统提示词），指导 LLM：
+- 仅基于提供的上下文回答，不编造
+- 以自然流畅的段落式散文输出（非分点列表，除非用户明确要求）
+- 充分展开回答，提供足够细节
+- 匹配用户问题的语言（中文问则中文答）
+- 自然地在文中引用来源，而非脚注形式
+
+rag_prompt 是 ChatPromptTemplate 实例，包含 system（上下文提示）和 human（用户问题）两条消息。
+"""
+
 from langchain_core.prompts import ChatPromptTemplate
 
 

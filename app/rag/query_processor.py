@@ -1,3 +1,16 @@
+"""
+查询预处理器模块（RAG 流水线第 2 步前半部分）。
+
+在向量检索之前，通过 LLM 对用户原始查询进行两项处理：
+1. 意图检测（Intent Detection）：分类为 question_answering / summarization /
+   comparison / fact_lookup 之一
+2. 查询改写（Query Rewrite）：将模糊/口语化的查询改写为更适合向量检索的清晰表述，
+   扩展模糊术语，使用文档中可能出现的精确关键词
+
+process_query() 返回 {"intent": str, "rewritten_query": str}。
+如果 LLM 调用失败，回退到原始查询（intent="unknown", rewritten_query=原始问题）。
+"""
+
 import logging
 
 from langchain_core.output_parsers import StrOutputParser

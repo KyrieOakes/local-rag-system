@@ -1,0 +1,1 @@
+"""schemas 子包 — Pydantic 数据模型（RAG 查询请求/响应）。"""

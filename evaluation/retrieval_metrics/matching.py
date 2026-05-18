@@ -1,3 +1,22 @@
+"""
+检索结果与标注数据匹配模块。
+
+核心挑战：Golden 数据集中的标注是文档级别的（file_path/source/text 片段），
+但检索器返回的是经过切分后的具体 chunk。本模块负责将两者关联起来。
+
+数据类：
+- RetrievedItem — 检索器返回的单个结果（id, content, metadata, score）
+- RelevantSource — Golden 数据集中标注的相关文档（file_path, source, text, relevance）
+- MatchedRelevance — 匹配结果（retrieved_ids, relevant_ids, relevance_scores）
+
+核心函数：
+- build_retrieved_item() — 从检索结果构造 RetrievedItem
+- relevant_source_from_dict() — 从 JSONL 字典构造 RelevantSource
+- match_retrieved_to_relevant_sources() — 将标注的相关文档映射到具体的检索 chunk ID
+  支持按 file_path、source、file_name、text 片段进行匹配（大小写和空白容忍）
+  未匹配到的标注会保留在 relevance_scores 中（用于 NDCG 的理想排序计算）
+"""
+
 from __future__ import annotations
 
 import hashlib

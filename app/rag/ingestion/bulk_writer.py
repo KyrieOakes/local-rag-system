@@ -1,3 +1,18 @@
+"""
+Qdrant 批量写入模块。
+
+提供高性能的 Qdrant 写入和删除操作：
+- delete_chunks_by_filepath() — 按 metadata.file_path 精确删除某文件的所有已有分块
+  （用于文件变更时的"先删后写"策略）
+- bulk_upsert_chunks() — 将预计算好嵌入的分块批量写入 Qdrant
+  - 使用 UUID v5 生成确定性点 ID（基于 file_path + md5 + chunk_index）
+  - 自动分批（默认 500 点/批），避免超过 Qdrant 的 32MB 单次载荷限制
+  - 每个点存储 page_content（文本）和 metadata（来源、文件路径、类型、校验等）
+
+与向量检索模块不同，这里直连 qdrant_client 而非使用 LangChain 封装，
+以获得更好的批量写入性能和控制。
+"""
+
 import logging
 import uuid
 

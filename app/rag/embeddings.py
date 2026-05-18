@@ -1,3 +1,13 @@
+"""
+嵌入模型模块。
+
+提供 LoggingOpenAIEmbeddings 类（继承自 LangChain 的 OpenAIEmbeddings），
+在 embed_query() 调用时自动记录耗时日志。
+
+get_embedding_model() 工厂函数返回配置好的嵌入模型实例，
+连接地址和模型名从 settings 读取（默认指向本地 LM Studio 的 text-embedding-qwen3-embedding-4b）。
+"""
+
 import logging
 import time
 

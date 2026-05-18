@@ -1,3 +1,15 @@
+"""
+批量嵌入模块。
+
+embed_texts() 将文本列表批量转换为向量嵌入：
+- 使用 OpenAI 兼容的 /v1/embeddings API（直连 OpenAI 客户端，不走 LangChain）
+- 按 batch_size 分批发送请求（默认 64 条/批）
+- 返回与输入文本顺序一致的嵌入向量列表
+- 每批记录耗时日志
+
+配置（base_url、model、api_key）从 settings 读取。
+"""
+
 import logging
 import time
 

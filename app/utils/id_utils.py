@@ -1,0 +1,1 @@
+"""ID 生成工具模块 — 占位模块，当前 ID 生成逻辑分散在 file_utils.py（UUID 文件名）和 bulk_writer.py（UUID v5 点 ID）中。"""

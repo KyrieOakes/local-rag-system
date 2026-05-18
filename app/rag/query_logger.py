@@ -1,3 +1,14 @@
+"""
+RAG 查询日志模块。
+
+每次 RAG 查询完成后调用 log_rag_query()，执行：
+1. 终端输出：一行简洁的日志摘要（时间、意图、命中数、top 文件、答案预览）
+2. JSONL 持久化：将完整查询轨迹写入 logs/history/rag_queries.jsonl，
+   包含问题、改写后的查询、意图、检索结果（排名+内容预览+评分）、LLM 答案
+
+用于调试、分析和回归测试。
+"""
+
 import json
 import logging
 from datetime import datetime

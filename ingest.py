@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
-"""Batch ingestion script for the local RAG system.
+"""
+批量文档摄取 CLI 脚本。
 
-Recursively scans an input directory, computes file checksums for incremental
-updates, loads/splits documents, batch-embeds chunks, and bulk-upserts into
-Qdrant.
+独立的命令行工具，用于将整个目录的文档递归摄取到 RAG 向量数据库。
+调用 app.rag.ingestion.ingest_pipeline.ingest_directory() 流水线。
 
-Usage:
+用法：
     python ingest.py --input_dir data/engineering --batch_size 64
     python ingest.py --input_dir data/engineering --batch_size 32 --collection_name my_collection
+
+参数：
+    --input_dir      要摄取的文档目录（必填）
+    --batch_size     每次嵌入 API 调用的文本条数（默认 64）
+    --collection_name Qdrant 集合名（默认从 .env 读取）
+
+支持增量更新：通过 MD5 校验和自动跳过未变更文件，仅处理新增和变更文件。
+完成后打印摘要：文件总数、新增/变更/跳过数、分块数、耗时。
 """
 
 import argparse
