@@ -1,7 +1,7 @@
 {
   "report_schema": "retrieval-eval-v1",
   "experiment_name": "notebook-run",
-  "created_at": "2026-05-18T17:43:41",
+  "created_at": "2026-05-18T18:16:46",
   "evaluation_layer": "retrieval",
   "dataset": "evaluation/datasets/golden_retrieval.example.jsonl",
   "top_k": 5,
@@ -15,20 +15,20 @@
   },
   "aggregate": {
     "core_metrics": {
-      "recall@5_mean": 0.6364,
-      "recall@5_std": 0.4924,
-      "precision@5_mean": 0.1636,
-      "precision@5_std": 0.159,
-      "mrr_mean": 0.3826,
-      "mrr_std": 0.3872,
-      "ndcg@5_mean": 0.3013,
-      "ndcg@5_std": 0.2929
+      "recall@5_mean": 0.4583,
+      "recall@5_std": 0.4656,
+      "precision@5_mean": 0.1455,
+      "precision@5_std": 0.1654,
+      "mrr_mean": 0.4068,
+      "mrr_std": 0.4358,
+      "ndcg@5_mean": 0.2965,
+      "ndcg@5_std": 0.3269
     },
     "context_quality": {
-      "context_redundancy@5_mean": 0.8364,
-      "context_redundancy@5_std": 0.159,
-      "irrelevant_rate@5_mean": 0.8364,
-      "irrelevant_rate@5_std": 0.159,
+      "context_redundancy@5_mean": 0.8545,
+      "context_redundancy@5_std": 0.1654,
+      "irrelevant_rate@5_mean": 0.8545,
+      "irrelevant_rate@5_std": 0.1654,
       "duplicate_rate@5_mean": 0.0,
       "duplicate_rate@5_std": 0.0
     }
@@ -36,7 +36,7 @@
   "per_question": [
     {
       "id": "q01",
-      "question": "What is the organizational structure of the AI Engineering department?",
+      "question": "What are the four golden signals that Duo Chat's monitoring framework is built around?",
       "core_metrics": {
         "recall@5": 0.0,
         "precision@5": 0.0,
@@ -66,22 +66,22 @@
     },
     {
       "id": "q03",
-      "question": "What is the difference between Code Completion and Code Generation?",
+      "question": "What is the AI Context Abstraction Layer and which vector databases does it support?",
       "core_metrics": {
-        "recall@5": 0.0,
-        "precision@5": 0.0,
-        "mrr": 0.0,
-        "ndcg@5": 0.0
+        "recall@5": 1.0,
+        "precision@5": 0.4,
+        "mrr": 1.0,
+        "ndcg@5": 0.7653606369886218
       },
       "context_quality": {
-        "context_redundancy@5": 1.0,
-        "irrelevant_rate@5": 1.0,
+        "context_redundancy@5": 0.6,
+        "irrelevant_rate@5": 0.6,
         "duplicate_rate@5": 0.0
       }
     },
     {
       "id": "q04",
-      "question": "How does Duo Chat handle resiliency when external LLM providers fail?",
+      "question": "How does the Global Search team leverage Elasticsearch as an enabling framework for other teams at GitLab?",
       "core_metrics": {
         "recall@5": 0.0,
         "precision@5": 0.0,
@@ -100,8 +100,8 @@
       "core_metrics": {
         "recall@5": 1.0,
         "precision@5": 0.2,
-        "mrr": 0.3333333333333333,
-        "ndcg@5": 0.40880179169644415
+        "mrr": 0.25,
+        "ndcg@5": 0.2580045033903332
       },
       "context_quality": {
         "context_redundancy@5": 0.8,
@@ -113,20 +113,20 @@
       "id": "q06",
       "question": "What is the mentoring process and how should mentees prepare?",
       "core_metrics": {
-        "recall@5": 1.0,
-        "precision@5": 0.4,
-        "mrr": 0.25,
-        "ndcg@5": 0.38488217402640007
+        "recall@5": 0.5,
+        "precision@5": 0.2,
+        "mrr": 1.0,
+        "ndcg@5": 0.6131471927654584
       },
       "context_quality": {
-        "context_redundancy@5": 0.6,
-        "irrelevant_rate@5": 0.6,
+        "context_redundancy@5": 0.8,
+        "irrelevant_rate@5": 0.8,
         "duplicate_rate@5": 0.0
       }
     },
     {
       "id": "q07",
-      "question": "How do you evaluate a new AI model for Code Suggestions?",
+      "question": "What is the difference between Code Completion and Code Generation in Code Suggestions?",
       "core_metrics": {
         "recall@5": 0.0,
         "precision@5": 0.0,
@@ -143,35 +143,20 @@
       "id": "q08",
       "question": "What feature flag process should be followed when introducing a new Code Suggestions model?",
       "core_metrics": {
-        "recall@5": 1.0,
-        "precision@5": 0.2,
-        "mrr": 0.5,
-        "ndcg@5": 0.38685280723454163
+        "recall@5": 0.0,
+        "precision@5": 0.0,
+        "mrr": 0.16666666666666666,
+        "ndcg@5": 0.0
       },
       "context_quality": {
-        "context_redundancy@5": 0.8,
-        "irrelevant_rate@5": 0.8,
+        "context_redundancy@5": 1.0,
+        "irrelevant_rate@5": 1.0,
         "duplicate_rate@5": 0.0
       }
     },
     {
       "id": "q09",
       "question": "Who owns the different parts of editor extensions like Duo Chat and Duo Workflow?",
-      "core_metrics": {
-        "recall@5": 1.0,
-        "precision@5": 0.2,
-        "mrr": 0.3333333333333333,
-        "ndcg@5": 0.33677195911498925
-      },
-      "context_quality": {
-        "context_redundancy@5": 0.8,
-        "irrelevant_rate@5": 0.8,
-        "duplicate_rate@5": 0.0
-      }
-    },
-    {
-      "id": "q10",
-      "question": "What is the issue refinement process for the Code Creation milestone planning?",
       "core_metrics": {
         "recall@5": 0.0,
         "precision@5": 0.0,
@@ -185,13 +170,28 @@
       }
     },
     {
+      "id": "q10",
+      "question": "What percentage of time should Code Creation engineers spend on issue refinement, and what is the refinement process?",
+      "core_metrics": {
+        "recall@5": 0.5,
+        "precision@5": 0.2,
+        "mrr": 1.0,
+        "ndcg@5": 0.7871546029909718
+      },
+      "context_quality": {
+        "context_redundancy@5": 0.8,
+        "irrelevant_rate@5": 0.8,
+        "duplicate_rate@5": 0.0
+      }
+    },
+    {
       "id": "q11",
       "question": "What are the expected competency levels in the Engineering career framework?",
       "core_metrics": {
         "recall@5": 1.0,
         "precision@5": 0.2,
         "mrr": 1.0,
-        "ndcg@5": 0.8609101556836468
+        "ndcg@5": 0.6735439182299785
       },
       "context_quality": {
         "context_redundancy@5": 0.8,
@@ -201,12 +201,12 @@
     },
     {
       "id": "q12",
-      "question": "How does Global Search handle incident severity classification?",
+      "question": "How does Global Search classify incident severity for search performance?",
       "core_metrics": {
         "recall@5": 1.0,
         "precision@5": 0.2,
         "mrr": 1.0,
-        "ndcg@5": 0.3373519727104165
+        "ndcg@5": 0.4692787260227565
       },
       "context_quality": {
         "context_redundancy@5": 0.8,
@@ -233,20 +233,20 @@
       "id": "q14",
       "question": "What monitoring and observability practices does Duo Chat follow?",
       "core_metrics": {
-        "recall@5": 1.0,
-        "precision@5": 0.2,
-        "mrr": 0.3333333333333333,
-        "ndcg@5": 0.16867598635520825
+        "recall@5": 0.0,
+        "precision@5": 0.0,
+        "mrr": 0.0,
+        "ndcg@5": 0.0
       },
       "context_quality": {
-        "context_redundancy@5": 0.8,
-        "irrelevant_rate@5": 0.8,
+        "context_redundancy@5": 1.0,
+        "irrelevant_rate@5": 1.0,
         "duplicate_rate@5": 0.0
       }
     },
     {
       "id": "q15",
-      "question": "What does the Senior Engineer role represent at GitLab and how does progression beyond it work?",
+      "question": "What are the key technical components of the Duo Workflow system?",
       "core_metrics": {
         "recall@5": 0.0,
         "precision@5": 0.0,
@@ -263,10 +263,10 @@
       "id": "q16",
       "question": "What is the difference between an Acting Manager and an Interim Manager?",
       "core_metrics": {
-        "recall@5": 1.0,
+        "recall@5": 0.75,
         "precision@5": 0.6,
         "mrr": 0.3333333333333333,
-        "ndcg@5": 0.3077050978094624
+        "ndcg@5": 0.44685352999185624
       },
       "context_quality": {
         "context_redundancy@5": 0.4,
@@ -276,16 +276,16 @@
     },
     {
       "id": "q17",
-      "question": "How are Code Suggestion API requests routed through the AI Gateway?",
+      "question": "How does Duo Chat implement fallback mechanisms when external LLM providers fail?",
       "core_metrics": {
-        "recall@5": 0.0,
-        "precision@5": 0.0,
-        "mrr": 0.0,
-        "ndcg@5": 0.0
+        "recall@5": 1.0,
+        "precision@5": 0.2,
+        "mrr": 0.5,
+        "ndcg@5": 0.38685280723454163
       },
       "context_quality": {
-        "context_redundancy@5": 1.0,
-        "irrelevant_rate@5": 1.0,
+        "context_redundancy@5": 0.8,
+        "irrelevant_rate@5": 0.8,
         "duplicate_rate@5": 0.0
       }
     },
@@ -293,10 +293,10 @@
       "id": "q18",
       "question": "What data stores and infrastructure power the AI context and search capabilities?",
       "core_metrics": {
-        "recall@5": 1.0,
+        "recall@5": 0.3333333333333333,
         "precision@5": 0.2,
-        "mrr": 0.3333333333333333,
-        "ndcg@5": 0.3065735963827292
+        "mrr": 0.2,
+        "ndcg@5": 0.15101961822780524
       },
       "context_quality": {
         "context_redundancy@5": 0.8,
@@ -308,20 +308,20 @@
       "id": "q19",
       "question": "How does the Global Search team handle bug backports?",
       "core_metrics": {
-        "recall@5": 1.0,
-        "precision@5": 0.2,
-        "mrr": 0.5,
-        "ndcg@5": 0.6309297535714575
+        "recall@5": 0.0,
+        "precision@5": 0.0,
+        "mrr": 0.16666666666666666,
+        "ndcg@5": 0.0
       },
       "context_quality": {
-        "context_redundancy@5": 0.8,
-        "irrelevant_rate@5": 0.8,
+        "context_redundancy@5": 1.0,
+        "irrelevant_rate@5": 1.0,
         "duplicate_rate@5": 0.0
       }
     },
     {
       "id": "q20",
-      "question": "What are the key technical components of the Duo Workflow system?",
+      "question": "What is the Code Creation milestone planning workflow from issue creation to delivery?",
       "core_metrics": {
         "recall@5": 0.0,
         "precision@5": 0.0,
@@ -338,14 +338,14 @@
       "id": "q21",
       "question": "How should customers be allowed to opt out of a new Code Suggestions model?",
       "core_metrics": {
-        "recall@5": 1.0,
-        "precision@5": 0.2,
-        "mrr": 0.5,
-        "ndcg@5": 0.4966392596877323
+        "recall@5": 0.0,
+        "precision@5": 0.0,
+        "mrr": 0.0,
+        "ndcg@5": 0.0
       },
       "context_quality": {
-        "context_redundancy@5": 0.8,
-        "irrelevant_rate@5": 0.8,
+        "context_redundancy@5": 1.0,
+        "irrelevant_rate@5": 1.0,
         "duplicate_rate@5": 0.0
       }
     },
@@ -355,8 +355,8 @@
       "core_metrics": {
         "recall@5": 1.0,
         "precision@5": 0.2,
-        "mrr": 1.0,
-        "ndcg@5": 0.3373519727104165
+        "mrr": 0.3333333333333333,
+        "ndcg@5": 0.3065735963827292
       },
       "context_quality": {
         "context_redundancy@5": 0.8,
