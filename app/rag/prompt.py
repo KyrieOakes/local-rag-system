@@ -42,14 +42,14 @@ Guidelines for every response:
 6. Use the same technical register as the context. If the documents are formal,
    match that tone; if they are conversational, follow suit.
 
+{history}
 Context:
 {context}
 """
 
-# 定义RAG系统提示模板
 rag_prompt = ChatPromptTemplate.from_messages(
     [
         ("system", RAG_SYSTEM_PROMPT),
-        ("human", "{question}"),# 这里是用户输入的问题占位符
+        ("human", "{question}"),
     ]
 )

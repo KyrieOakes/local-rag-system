@@ -1,21 +1,25 @@
 """
-RAG 查询服务层（核心编排）。
+RAG 查询服务层（核心编排 — 含 RAG 路由门控与会话上下文）。
 
-query_rag() 编排完整的 RAG 查询流水线，共 6 步：
+query_rag() 编排完整的 RAG 查询流水线：
 STEP 1 — 接收用户输入（在 API 层完成）
-STEP 2 — 查询预处理：意图检测 + 查询改写（query_processor）
-STEP 3 — 向量检索：从 Qdrant 检索 top_k 个最相关文档块（retriever）
-STEP 4 — 构建提示词（chain）
-STEP 5 — LLM 生成答案（chain）
-STEP 6 — 组装响应 + 记录日志（query_logger）
-
-返回 QueryResponse，包含原始问题、生成的答案和检索到的来源列表。
+STEP 2 — 查询预处理 + RAG 路由门控（query_processor）
+  - Layer 0: 关键词预过滤（问候语等，零 LLM 调用）
+  - Layer 1: LLM 统一路由：决定是否需要检索 + 意图检测 + 改写/直接回答
+  - 分流：needs_rag=False → 跳过 STEP 3，直接返回 LLM 回答
+STEP 3 — 向量检索（仅 needs_rag=True 时执行）
+STEP 4 — 构建提示词
+STEP 5 — LLM 生成答案
+STEP 6 — 组装响应 + 记录日志
 """
 
+import json
 import logging
+import threading
 import time
+import uuid
 
-from app.rag.chain import generate_answer
+from app.rag.chain import generate_answer, generate_answer_stream
 from app.rag.query_processor import process_query
 from app.rag.query_logger import log_rag_query
 from app.rag.retriever import retrieve_relevant_documents
@@ -24,33 +28,9 @@ from app.schemas.rag import QueryResponse, SourceChunk
 logger = logging.getLogger(__name__)
 
 
-def query_rag(question: str, top_k: int = 5) -> QueryResponse:
-    step2_start = time.perf_counter()
-    logger.info("[RAG][STEP 2] Query processing 开始")
-    processed = process_query(question)
-    retrieval_query = processed["rewritten_query"]
-    logger.info(
-        "[RAG][STEP 2] Query processing 完成，耗时 %.3fs, intent=%s",
-        time.perf_counter() - step2_start,
-        processed["intent"],
-    )
-
-    retrieved_results = retrieve_relevant_documents(
-        question=retrieval_query,
-        top_k=top_k,
-    )
-
-    documents = [document for document, _score in retrieved_results]
-
-    answer = generate_answer(
-        question=question,
-        documents=documents,
-    )
-
-    step6_start = time.perf_counter()
-    logger.info("[RAG][STEP 6] 返回结果开始")
-
-    sources = [
+def _build_sources(retrieved_results: list) -> list[SourceChunk]:
+    """Build SourceChunk list from retrieval results."""
+    return [
         SourceChunk(
             content=document.page_content,
             source=document.metadata.get("source"),
@@ -63,21 +43,163 @@ def query_rag(question: str, top_k: int = 5) -> QueryResponse:
         for document, score in retrieved_results
     ]
 
+
+def query_rag(
+    question: str,
+    top_k: int = 5,
+    conversation_id: str | None = None,
+    history: list | None = None,
+    force_rag: bool = False,
+) -> QueryResponse:
+    history = history or []
+    conversation_id = conversation_id or uuid.uuid4().hex[:12]
+
+    # STEP 2 — Query processing + RAG routing gate
+    step2_start = time.perf_counter()
+    logger.info("[RAG][STEP 2] Query processing + routing 开始")
+    processed = process_query(question, history=history)
+
+    needs_rag = processed["needs_rag"] or force_rag
+    routing = "rag" if needs_rag else ("greeting" if processed["intent"] == "chitchat" else "direct")
+
+    logger.info(
+        "[RAG][STEP 2] Query processing 完成，耗时 %.3fs, needs_rag=%s, intent=%s, routing=%s",
+        time.perf_counter() - step2_start,
+        needs_rag,
+        processed["intent"],
+        routing,
+    )
+
+    # Branch: non-RAG path — return direct answer immediately
+    if not needs_rag:
+        answer = processed.get("direct_answer") or "I'm not sure how to help with that."
+        response = QueryResponse(
+            question=question,
+            answer=answer,
+            sources=[],
+            conversation_id=conversation_id,
+            routing=routing,
+        )
+        # Async logging (non-blocking)
+        threading.Thread(
+            target=log_rag_query,
+            args=(question, processed.get("rewritten_query", question),
+                  processed["intent"], [], answer, top_k),
+            daemon=True,
+        ).start()
+        return response
+
+    # RAG path — full pipeline
+    retrieval_query = processed["rewritten_query"] or question
+
+    # STEP 3 — Vector retrieval
+    retrieved_results = retrieve_relevant_documents(
+        question=retrieval_query,
+        top_k=top_k,
+    )
+
+    documents = [document for document, _score in retrieved_results]
+
+    # STEP 4+5 — Generate answer
+    answer = generate_answer(
+        question=question,
+        documents=documents,
+        history=history,
+    )
+
+    # STEP 6 — Assemble response
+    step6_start = time.perf_counter()
+    logger.info("[RAG][STEP 6] 返回结果开始")
+
+    sources = _build_sources(retrieved_results)
+
     response = QueryResponse(
         question=question,
         answer=answer,
         sources=sources,
+        conversation_id=conversation_id,
+        routing=routing,
     )
     logger.info("[RAG][STEP 6] 返回结果完成，耗时 %.3fs", time.perf_counter() - step6_start)
 
-    # Log full query trace to JSONL + brief summary to terminal
-    log_rag_query(
-        question=question,
-        rewritten_query=retrieval_query,
-        intent=processed["intent"],
-        retrieved_results=retrieved_results,
-        answer=answer,
+    # Async logging (non-blocking)
+    threading.Thread(
+        target=log_rag_query,
+        args=(question, retrieval_query, processed["intent"],
+              retrieved_results, answer, top_k),
+        daemon=True,
+    ).start()
+
+    return response
+
+
+def _sse_event(event: str, data: dict | str) -> str:
+    """Format a Server-Sent Event line."""
+    payload = data if isinstance(data, str) else json.dumps(data, ensure_ascii=False)
+    return f"event: {event}\ndata: {payload}\n\n"
+
+
+async def query_rag_stream(
+    question: str,
+    top_k: int = 5,
+    conversation_id: str | None = None,
+    history: list | None = None,
+    force_rag: bool = False,
+):
+    """Async generator that yields SSE-formatted events for streaming RAG responses."""
+    history = history or []
+    conversation_id = conversation_id or uuid.uuid4().hex[:12]
+
+    # STEP 2 — Query processing + routing
+    processed = process_query(question, history=history)
+    needs_rag = processed["needs_rag"] or force_rag
+    routing = "rag" if needs_rag else ("greeting" if processed["intent"] == "chitchat" else "direct")
+
+    # Yield routing event
+    yield _sse_event("routing", {"routing": routing, "conversation_id": conversation_id})
+
+    # Non-RAG path — send direct answer as single chunk
+    if not needs_rag:
+        answer = processed.get("direct_answer") or "I'm not sure how to help with that."
+        yield _sse_event("token", answer)
+        yield _sse_event("sources", [])
+        yield _sse_event("done", {})
+        threading.Thread(
+            target=log_rag_query,
+            args=(question, processed.get("rewritten_query", question),
+                  processed["intent"], [], answer, top_k),
+            daemon=True,
+        ).start()
+        return
+
+    # RAG path — retrieve and stream
+    retrieval_query = processed["rewritten_query"] or question
+    retrieved_results = retrieve_relevant_documents(
+        question=retrieval_query,
         top_k=top_k,
     )
 
-    return response
+    documents = [document for document, _score in retrieved_results]
+    sources = _build_sources(retrieved_results)
+
+    # Stream tokens from LLM
+    full_answer = ""
+    async for token in generate_answer_stream(
+        question=question,
+        documents=documents,
+        history=history,
+    ):
+        full_answer += token
+        yield _sse_event("token", token)
+
+    # Yield sources + done
+    yield _sse_event("sources", [s.model_dump() for s in sources])
+    yield _sse_event("done", {})
+
+    # Async logging
+    threading.Thread(
+        target=log_rag_query,
+        args=(question, retrieval_query, processed["intent"],
+              retrieved_results, full_answer, top_k),
+        daemon=True,
+    ).start()

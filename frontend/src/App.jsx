@@ -23,6 +23,7 @@ import {
   uploadDocument,
   uploadDocuments,
   queryRag,
+  queryRagStream,
   listDocuments,
   deleteDocument,
 } from "./api";
@@ -33,6 +34,7 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loadingQuery, setLoadingQuery] = useState(false);
+  const [conversationId, setConversationId] = useState(null);
 
   const [showSidebar, setShowSidebar] = useState(false);
 
@@ -220,15 +222,23 @@ function App() {
   }
 
   async function handleSend() {
-    const text = input.trim();
+    const rawText = input.trim();
 
-    if (!text || loadingQuery) return;
+    if (!rawText || loadingQuery) return;
 
     setInput("");
 
+    // Handle @rag prefix — force RAG mode
+    let forceRag = false;
+    let displayText = rawText;
+    if (rawText.startsWith("@rag")) {
+      forceRag = true;
+      displayText = rawText.slice(4).trim() || rawText;
+    }
+
     const userMsg = {
       role: "user",
-      content: text,
+      content: displayText,
     };
 
     setMessages((prev) => [...prev, userMsg]);
@@ -244,24 +254,65 @@ function App() {
         role: "assistant",
         content: "",
         sources: [],
+        routing: null,
         loading: true,
       },
     ]);
 
-    try {
-      const data = await queryRag(text);
+    // Build recent conversation history (last 10 user+assistant messages)
+    const recentHistory = messages
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .slice(-10)
+      .map(({ role, content }) => ({ role, content }));
 
-      setMessages((prev) =>
-        prev.map((msg) =>
-          msg.id === placeholderId
-            ? {
-                ...msg,
-                content: data.answer || "No answer returned.",
-                sources: data.sources || [],
-                loading: false,
-              }
-            : msg
-        )
+    try {
+      await queryRagStream(
+        {
+          question: rawText,
+          conversationId,
+          history: recentHistory,
+          forceRag,
+        },
+        {
+          onRouting({ routing, conversation_id }) {
+            if (conversation_id) setConversationId(conversation_id);
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === placeholderId ? { ...msg, routing } : msg
+              )
+            );
+          },
+          onToken(token) {
+            setMessages((prev) => {
+              const msg = prev.find((m) => m.id === placeholderId);
+              const firstToken = msg?.loading && msg.content === "";
+              return prev.map((m) =>
+                m.id === placeholderId
+                  ? { ...m, content: m.content + token, loading: !firstToken ? m.loading : false }
+                  : m
+              );
+            });
+          },
+          onSources(sources) {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === placeholderId
+                  ? { ...msg, sources: sources || [] }
+                  : msg
+              )
+            );
+          },
+          onDone() {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === placeholderId && msg.loading
+                  ? { ...msg, loading: false }
+                  : msg
+              )
+            );
+            setLoadingQuery(false);
+          },
+        }
       );
     } catch (err) {
       setMessages((prev) =>
@@ -270,15 +321,15 @@ function App() {
             ? {
                 ...msg,
                 content:
-                  err.response?.data?.detail ||
+                  err.message ||
                   "Query failed. Please check whether the backend service is running.",
                 sources: [],
+                routing: "error",
                 loading: false,
               }
             : msg
         )
       );
-    } finally {
       setLoadingQuery(false);
     }
   }
@@ -349,6 +400,7 @@ function App() {
   function newChat() {
     setMessages([]);
     setInput("");
+    setConversationId(null);
   }
 
   function fileTypeIcon(fileType) {
@@ -954,6 +1006,20 @@ function App() {
                       </div>
                     ) : (
                       <div className="message-text">{msg.content}</div>
+                    )}
+
+                    {msg.routing && !msg.loading && (
+                      <div className="message-routing">
+                        <span className={`routing-badge ${msg.routing}`}>
+                          {msg.routing === "rag"
+                            ? "Searched documents"
+                            : msg.routing === "direct"
+                              ? "Direct response"
+                              : msg.routing === "greeting"
+                                ? "Quick reply"
+                                : ""}
+                        </span>
+                      </div>
                     )}
 
                     {msg.sources && msg.sources.length > 0 && (

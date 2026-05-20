@@ -1,17 +1,26 @@
 """
-查询预处理器模块（RAG 流水线第 2 步前半部分）。
+查询预处理器 + RAG 路由门控模块。
 
-在向量检索之前，通过 LLM 对用户原始查询进行两项处理：
-1. 意图检测（Intent Detection）：分类为 question_answering / summarization /
-   comparison / fact_lookup 之一
-2. 查询改写（Query Rewrite）：将模糊/口语化的查询改写为更适合向量检索的清晰表述，
-   扩展模糊术语，使用文档中可能出现的精确关键词
+在向量检索之前，通过 LLM 完成三项任务：
+1. 路由决策（Routing）：判断查询是否需要检索文档库，还是可以直接回答
+2. 意图检测（Intent Detection）：分类查询意图
+3. 查询改写（Query Rewrite）：将模糊查询改写为适合向量检索的清晰表述
 
-process_query() 返回 {"intent": str, "rewritten_query": str}。
-如果 LLM 调用失败，回退到原始查询（intent="unknown", rewritten_query=原始问题）。
+两层路由：
+- Layer 0 — 关键词预过滤（零 LLM 调用）：问候语、致谢、告别、元问题直接返回
+- Layer 1 — LLM 统一路由：单次 LLM 调用同时完成路由决策 + 意图检测 + 改写/直接回答
+
+process_query() 返回：
+{
+    "needs_rag": bool,
+    "intent": str,
+    "rewritten_query": str | None,
+    "direct_answer": str | None,
+}
 """
 
 import logging
+import re
 
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
@@ -20,70 +29,143 @@ from app.llm.local_llm import get_llm
 
 logger = logging.getLogger(__name__)
 
-QUERY_PROCESSING_SYSTEM_PROMPT = """
-You are a query processing assistant for a RAG (Retrieval-Augmented Generation) system.
+# Layer 0: 关键词预过滤 — 零成本拦截明显不需要 RAG 的查询
+# Each tuple: (pattern, category) — category maps to GREETING_RESPONSES key
+GREETING_RULES = [
+    # category: "greeting"
+    (r"^(hi|hello|hey|yo|sup|good morning|good evening|good afternoon)[\s!.,]*$", "greeting"),
+    (r"^(how are you|what'?s up|howdy|how are things|how'?s it going)[\s!.?,]*$", "greeting"),
+    (r"^(你好|您好|嗨|哈喽|早上好|晚上好|下午好)[\s!！。，]*$", "greeting"),
+    # category: "thanks"
+    (r"^(thanks|thank you|thx|ok|okay|got it|nice|great|cool|awesome|perfect)[\s!.?,]*$", "thanks"),
+    (r"^(谢谢|多谢|感谢|好的|OK|明白了|知道了|懂了|收到)[\s!！。，]*$", "thanks"),
+    # category: "goodbye"
+    (r"^(bye|goodbye|see you|cya|later|good night|night)[\s!.?,]*$", "goodbye"),
+    (r"^(再见|拜拜|回头见|晚安|明天见)[\s!！。，]*$", "goodbye"),
+    # category: "meta"
+    (r"^(who are you|what are you|what can you do|help|what do you do|how do you work|what are your capabilities)[\s!.?,]*$", "meta"),
+    (r"^(你是谁|你能做什么|你有什么功能|你怎么用|帮助)[\s!！。，?？]*$", "meta"),
+]
 
-Analyze the user's query and perform two tasks:
+GREETING_RESPONSES = {
+    "greeting": "Hello! I'm your local RAG assistant. I can help you search through your documents and answer questions based on their content. What would you like to know?",
+    "thanks": "You're welcome! Let me know if you have more questions.",
+    "goodbye": "Goodbye! Feel free to come back anytime you need to search your documents.",
+    "meta": "I'm a local RAG (Retrieval-Augmented Generation) assistant. I can search through your uploaded documents and answer questions grounded in their content. Just ask me anything about your knowledge base!",
+}
 
-1. Intent Detection: classify the query into one of these categories:
-   - question_answering: asking a specific question
-   - summarization: requesting a summary or overview
-   - comparison: comparing topics, documents, or ideas
-   - fact_lookup: looking up a specific fact or piece of information
+QUERY_PROCESSING_SYSTEM_PROMPT = """\
+Analyze the user query for a RAG system. Perform routing first, then act accordingly.
 
-2. Query Rewrite: rewrite the original query to be clearer and more suitable for vector database retrieval.
-   - Expand vague or ambiguous terms
-   - Use specific keywords likely to appear in documents
-   - Preserve the original meaning and language
+ROUTING rules:
+- YES: query needs document search (asks about uploaded docs, specific technical content, "my documents", "the knowledge base", etc.)
+- NO: query is answerable from general knowledge (greetings, chitchat, general programming, math, common knowledge, opinions)
 
-Output exactly two lines (no extra text):
-INTENT: <intent>
-QUERY: <rewritten query>
-"""
+If ROUTING=YES, also classify INTENT: question_answering | summarization | comparison | fact_lookup, then rewrite the query for vector search (expand vague terms, add precise keywords).
 
-_query_processing_prompt = ChatPromptTemplate.from_messages(
-    [
-        ("system", QUERY_PROCESSING_SYSTEM_PROMPT),
-        ("human", "{question}"),
-    ]
-)
+If ROUTING=NO, provide a concise, helpful direct answer.
+
+Output format:
+ROUTING: YES|NO
+[if YES] INTENT: <intent>
+[if YES] QUERY: <rewritten query>
+[if NO] ANSWER: <direct reply>"""
+
+_query_processing_prompt = ChatPromptTemplate.from_messages([
+    ("system", QUERY_PROCESSING_SYSTEM_PROMPT),
+    ("human", "{question}"),
+])
 
 
-def process_query(question: str) -> dict:
+def _check_greeting(question: str) -> dict | None:
+    """Layer 0: keyword pre-filter for obvious non-RAG queries. Returns None if no match."""
+    normalized = question.strip().lower()
+    for pattern, category in GREETING_RULES:
+        if re.match(pattern, normalized, re.IGNORECASE):
+            return {
+                "needs_rag": False,
+                "intent": "chitchat",
+                "rewritten_query": None,
+                "direct_answer": GREETING_RESPONSES[category],
+            }
+    return None
+
+
+def _format_history(history: list) -> str:
+    """Format recent conversation history for prompt injection."""
+    if not history:
+        return ""
+    lines = []
+    for msg in history:
+        role_label = "User" if msg.role == "user" else "Assistant"
+        lines.append(f"{role_label}: {msg.content}")
+    return "\n".join(lines)
+
+
+def process_query(question: str, history: list | None = None) -> dict:
     """
-    Process the user query before retrieval — detect intent and rewrite.
+    Process the user query — route, detect intent, rewrite or answer directly.
 
-    Returns {"intent": str, "rewritten_query": str}.
-    Falls back to the original query on any failure.
+    Returns {"needs_rag": bool, "intent": str, "rewritten_query": str|None, "direct_answer": str|None}.
     """
+    history = history or []
+
+    # Layer 0: keyword pre-filter
+    greeting_result = _check_greeting(question)
+    if greeting_result:
+        logger.info("Query routed by keyword pre-filter — no LLM call needed")
+        return greeting_result
+
     try:
         llm = get_llm()
         chain = _query_processing_prompt | llm | StrOutputParser()
-        response = chain.invoke({"question": question})
 
+        history_text = _format_history(history)
+        if history_text:
+            invoke_input = {
+                "question": f"Previous conversation:\n{history_text}\n\nCurrent question: {question}"
+            }
+        else:
+            invoke_input = {"question": question}
+
+        response = chain.invoke(invoke_input)
+
+        needs_rag = False
         intent = "unknown"
-        rewritten_query = question
+        rewritten_query = None
+        direct_answer = None
 
         for line in response.strip().split("\n"):
             stripped = line.strip()
-            if stripped.upper().startswith("INTENT:"):
+            upper = stripped.upper()
+            if upper.startswith("ROUTING:"):
+                needs_rag = stripped.split(":", 1)[1].strip().upper() == "YES"
+            elif upper.startswith("INTENT:"):
                 intent = stripped.split(":", 1)[1].strip()
-            elif stripped.upper().startswith("QUERY:"):
+            elif upper.startswith("QUERY:"):
                 rewritten_query = stripped.split(":", 1)[1].strip()
+            elif upper.startswith("ANSWER:"):
+                direct_answer = stripped.split(":", 1)[1].strip()
 
-        if not rewritten_query:
+        if needs_rag and not rewritten_query:
             rewritten_query = question
 
         logger.info(
-            "Query processed — intent=%s, rewritten='%s'",
-            intent,
-            rewritten_query,
+            "Query processed — needs_rag=%s, intent=%s, rewritten='%s'",
+            needs_rag, intent, rewritten_query,
         )
-        return {"intent": intent, "rewritten_query": rewritten_query}
+        return {
+            "needs_rag": needs_rag,
+            "intent": intent,
+            "rewritten_query": rewritten_query,
+            "direct_answer": direct_answer,
+        }
 
     except Exception as exc:
-        logger.warning(
-            "Query processing failed, falling back to original query: %s",
-            exc,
-        )
-        return {"intent": "unknown", "rewritten_query": question}
+        logger.warning("Query processing failed, falling back to direct answer: %s", exc)
+        return {
+            "needs_rag": False,
+            "intent": "unknown",
+            "rewritten_query": question,
+            "direct_answer": "Sorry, I encountered an error processing your query. Could you try again?",
+        }

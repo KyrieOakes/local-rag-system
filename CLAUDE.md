@@ -49,19 +49,19 @@ python -m unittest discover tests/
 **Backend** (`app/`) — FastAPI application with three route modules and a layered RAG pipeline:
 
 - `app/main.py` — App factory, CORS middleware (allows `:5173`), route registration
-- `app/api/` — Route handlers: `health.py` (`GET /health`), `documents.py` (`POST /upload`, `POST /upload-batch`, `GET /`, `DELETE /{source}`), `rag.py` (`POST /rag/query`)
-- `app/services/` — Business logic orchestration. `ingestion_service.py` delegates to the unified `ingest_file_paths` pipeline; `rag_service.py` wires query_processor → retriever → chain; `document_service.py` handles list/delete by querying Qdrant directly
+- `app/api/` — Route handlers: `health.py` (`GET /health`), `documents.py` (`POST /upload`, `POST /upload-batch`, `GET /`, `DELETE /{source}`), `rag.py` (`POST /rag/query` + `POST /rag/query/stream` SSE streaming)
+- `app/services/` — Business logic orchestration. `ingestion_service.py` delegates to the unified `ingest_file_paths` pipeline; `rag_service.py` orchestrates the full RAG pipeline with RAG routing gate, conversation context, async logging, and SSE streaming (`query_rag` + `query_rag_stream`); `document_service.py` handles list/delete by querying Qdrant directly
 - `ingest.py` — Standalone CLI script at repo root. `python ingest.py --input_dir <dir> --batch_size <n> [--collection_name <name>]`
 - `app/rag/` — The RAG pipeline primitives:
   - `loader.py` — Loads PDF (PyPDF), TXT/MD (TextLoader), DOCX (Docx2txtLoader) via LangChain document loaders
   - `splitter.py` — MarkdownHeaderTextSplitter (preserves H1/H2/H3 hierarchy) for .md/.markdown; RecursiveCharacterTextSplitter for all other types
-  - `embeddings.py` — Wraps OpenAIEmbeddings pointed at a local embedding server (LM Studio / Ollama)
-  - `query_processor.py` — Pre-retrieval LLM call: intent detection and query rewriting. Falls back to original query on failure.
+  - `embeddings.py` — `CachedOpenAIEmbeddings` with thread-safe LRU cache (256 entries, MD5-keyed) for repeated query embeddings. Wraps OpenAIEmbeddings pointed at local/cloud embedding server.
+  - `query_processor.py` — Two-layer RAG routing gate: **Layer 0** keyword pre-filter (regex-based, catches greetings/thanks/goodbyes/meta-questions with zero LLM cost); **Layer 1** unified LLM call that simultaneously decides `needs_rag`, detects intent, and either rewrites the query for retrieval or generates a direct answer. Accepts conversation history for pronoun resolution.
   - `vectorstore.py` — QdrantVectorStore singleton; also contains `list_all_documents()` and `delete_document_by_source()`
   - `retriever.py` — `similarity_search_with_score` against the vectorstore
-  - `chain.py` — Builds a LangChain chain: `rag_prompt | llm | StrOutputParser`
-  - `prompt.py` — System prompt template; instructs LLM to write natural flowing prose, grounded in context
-  - `query_logger.py` — Writes full query trace to `logs/history/rag_queries.jsonl` + brief terminal summary
+  - `chain.py` — Builds a LangChain chain: `rag_prompt | llm | StrOutputParser`. `generate_answer()` for sync; `generate_answer_stream()` async generator for SSE token streaming. Formats conversation history with ~2048 token budget.
+  - `prompt.py` — System prompt template with `{history}` and `{context}` placeholders; instructs LLM to write natural flowing prose grounded in context + conversation
+  - `query_logger.py` — Writes full query trace to `logs/history/rag_queries.jsonl` + brief terminal summary. Called from background thread (non-blocking).
   - `ingestion/` — Unified batch-ingestion pipeline:
     - `checksum_store.py` — SQLite-based MD5 checksum database for incremental updates
     - `batch_embedder.py` — Batch embedding via OpenAI-compatible `/v1/embeddings` (configurable batch_size)
@@ -69,15 +69,15 @@ python -m unittest discover tests/
     - `ingest_pipeline.py` — Orchestration: scan → checksum classify → load → split → batch embed → bulk upsert
 - `app/llm/local_llm.py` — `get_llm()` returns a `ChatOpenAI` instance. `"local"` → local LM Studio/Ollama config; `"cloud"` → cloud API config.
 - `app/core/config.py` — `Settings` class loaded from `.env` via pydantic-settings
-- `app/schemas/` — Pydantic models: `QueryRequest`/`QueryResponse`/`SourceChunk`
+- `app/schemas/` — Pydantic models: `Message` (role+content for conversation history), `QueryRequest` (question, conversation_id, history, force_rag), `QueryResponse` (question, answer, sources, conversation_id, routing), `SourceChunk`
 - `app/utils/file_utils.py` — Validates file extension (`.pdf`, `.txt`, `.md`, `.markdown`, `.docx`), saves to `data/raw/` with UUID filenames
 
 **Frontend** (`frontend/`) — React 19 + Vite, single-page chat UI with "Editorial Ink" dark theme:
 
-- `src/App.jsx` — Entire application in one component (sidebar, chat messages, upload modal, document manager modal). No router — all UI state managed via `useState`. Health check on mount, scroll-to-bottom on new messages, click-outside/Escape to close panels. Uses SVG icons for file types and welcome hints; emoji avatars for message roles.
-- `src/App.css` — Complete design system with CSS custom properties (design tokens for colors, shadows, radii, transitions). Smoked-glass panels, refined typography, subtle ambient light bleeds. ~800 lines (down from ~2000).
+- `src/App.jsx` — Entire application in one component (sidebar, chat messages, upload modal, document manager modal). Manages `conversationId` state for multi-turn conversations; builds recent history (last 10 messages) for each request; handles `@rag` prefix to force retrieval mode; renders SSE-streamed tokens in real-time; shows routing badge ("Searched documents" / "Direct response" / "Quick reply") on each assistant message. No router — all UI state managed via `useState`.
+- `src/App.css` — Complete design system with CSS custom properties (design tokens for colors, shadows, radii, transitions). Smoked-glass panels, refined typography, subtle ambient light bleeds. Includes `.routing-badge` styles for rag/direct/greeting indicators.
 - `src/index.css` — Base reset, grain texture overlay, imports Plus Jakarta Sans (Google Fonts) with weight range 300–800.
-- `src/api.js` — Axios instance pointing at `http://127.0.0.1:8000`, exports `healthCheck`, `uploadDocument`, `uploadDocuments`, `queryRag`, `listDocuments`, `deleteDocument`
+- `src/api.js` — Axios instance pointing at `http://127.0.0.1:8000`, exports `healthCheck`, `uploadDocument`, `uploadDocuments`, `queryRag` (with conversationId/history/forceRag params), `queryRagStream` (fetch-based SSE reader with event callbacks), `listDocuments`, `deleteDocument`
 - Frontend dependencies include `react-markdown` for rendering LLM Markdown responses
 
 **Evaluation** (`evaluation/`) — Offline retrieval quality assessment:

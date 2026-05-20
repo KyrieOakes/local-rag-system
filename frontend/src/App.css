@@ -885,6 +885,39 @@
   }
 }
 
+/* ========== Routing Badge ========== */
+
+.message-routing {
+  margin-top: 8px;
+}
+
+.routing-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.routing-badge.rag {
+  background: rgba(74, 222, 128, 0.1);
+  color: #4ade80;
+  border: 1px solid rgba(74, 222, 128, 0.2);
+}
+
+.routing-badge.direct {
+  background: rgba(167, 139, 250, 0.1);
+  color: #a78bfa;
+  border: 1px solid rgba(167, 139, 250, 0.2);
+}
+
+.routing-badge.greeting {
+  background: rgba(251, 191, 36, 0.08);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.15);
+}
+
 /* ========== Sources Panel ========== */
 
 .message-sources {

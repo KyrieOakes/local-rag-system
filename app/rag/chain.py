@@ -2,12 +2,9 @@
 RAG 答案生成模块（Chain）。
 
 负责 RAG 流水线的第 4-5 步：
-1. format_documents_for_context() — 将检索到的文档列表格式化为 LLM 提示词所需的上下文字符串，
-   每个文档块附带来源信息（source、page）
-2. generate_answer() — 构建 LangChain 链（rag_prompt | llm | StrOutputParser），
-   调用 LLM 基于上下文生成自然语言答案
-
-生成的答案是自然流畅的段落式散文，而非分点列表。
+1. format_documents_for_context() — 将检索到的文档列表格式化为 LLM 提示词所需的上下文字符串
+2. _format_history() — 将对话历史格式化为提示词所需的历史字符串（最多 2048 token 预算）
+3. generate_answer() — 构建 LangChain 链（rag_prompt | llm | StrOutputParser），调用 LLM 生成答案
 """
 
 import logging
@@ -21,50 +18,88 @@ from app.rag.prompt import rag_prompt
 
 logger = logging.getLogger(__name__)
 
-# 格式化文档列表为RAG系统提示所需的上下文字符串
+MAX_HISTORY_TOKENS = 2048
+
+
 def format_documents_for_context(documents: list[Document]) -> str:
+    """Format retrieved documents into a context string with source headers."""
     formatted_chunks = []
 
-    # 为每个文档添加来源信息和内容，构建上下文字符串
     for index, document in enumerate(documents, start=1):
-        # 从文档的metadata中提取source和page信息，如果没有则使用默认值
         source = document.metadata.get("source", "unknown")
         page = document.metadata.get("page")
 
-        # 构建每个文档的上下文块，包含来源信息和文档内容
         header = f"[Source {index}] source={source}"
         if page is not None:
             header += f", page={page}"
 
-        # 将文档的上下文块添加到格式化列表中
-        formatted_chunks.append(
-            f"{header}\n{document.page_content}"
-        )
+        formatted_chunks.append(f"{header}\n{document.page_content}")
 
     return "\n\n".join(formatted_chunks)
 
 
-def generate_answer(question: str, documents: list[Document]) -> str:
-    # 获取本地部署的LLM模型实例
+def _format_history(history: list) -> str:
+    """Format conversation history for the RAG prompt, capped at ~2048 tokens."""
+    if not history:
+        return ""
+
+    formatted = []
+    token_estimate = 0
+
+    for msg in reversed(history):
+        role_label = "User" if msg.role == "user" else "Assistant"
+        line = f"{role_label}: {msg.content}"
+        estimated = len(line) // 3  # rough char-to-token heuristic
+        if token_estimate + estimated > MAX_HISTORY_TOKENS:
+            break
+        formatted.insert(0, line)
+        token_estimate += estimated
+
+    return "Previous conversation:\n" + "\n".join(formatted)
+
+
+def _build_chain_input(question: str, documents: list[Document], history: list) -> dict:
+    """Build the input dict for the LangChain RAG chain."""
+    context = format_documents_for_context(documents)
+    history_text = _format_history(history)
+    return {
+        "question": question,
+        "context": context,
+        "history": history_text,
+    }
+
+
+def generate_answer(question: str, documents: list[Document], history: list | None = None) -> str:
+    history = history or []
     llm = get_llm()
-    # 将文档列表格式化为RAG系统提示所需的上下文字符串
+
     step4_start = time.perf_counter()
     logger.info("[RAG][STEP 4] prompt 构建开始")
-    context = format_documents_for_context(documents)
+    chain_input = _build_chain_input(question, documents, history)
 
-    # 构建RAG系统提示链，将提示模板、LLM模型和输出解析器组合在一起
     chain = rag_prompt | llm | StrOutputParser()
     logger.info("[RAG][STEP 4] prompt 构建完成，耗时 %.3fs", time.perf_counter() - step4_start)
 
-    # 调用链来生成答案，传入用户问题和格式化后的上下文字符串
     step5_start = time.perf_counter()
     logger.info("[RAG][STEP 5] LLM 调用开始")
-    answer = chain.invoke(
-        {
-            "question": question,
-            "context": context,
-        }
-    )
+    answer = chain.invoke(chain_input)
     logger.info("[RAG][STEP 5] LLM 调用完成，耗时 %.3fs", time.perf_counter() - step5_start)
 
     return answer
+
+
+async def generate_answer_stream(question: str, documents: list[Document], history: list | None = None):
+    """Async generator that yields answer tokens one at a time via SSE."""
+    history = history or []
+    llm = get_llm()
+
+    logger.info("[RAG][STEP 4] prompt 构建开始 (streaming)")
+    chain_input = _build_chain_input(question, documents, history)
+
+    chain = rag_prompt | llm | StrOutputParser()
+    logger.info("[RAG][STEP 4] prompt 构建完成 (streaming)")
+
+    logger.info("[RAG][STEP 5] LLM streaming 开始")
+    async for token in chain.astream(chain_input):
+        yield token
+    logger.info("[RAG][STEP 5] LLM streaming 完成")
