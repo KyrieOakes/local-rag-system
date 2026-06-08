@@ -47,6 +47,14 @@ class Settings(BaseSettings):
     chunk_size: int = 800
     chunk_overlap: int = 120
 
+    # ── Rerank 配置 ──
+    reranker_type: str = "none"  # "none" | "cross_encoder" | "hybrid"
+    reranker_model: str = "BAAI/bge-reranker-base"
+    reranker_candidate_top_n: int = 20  # vector search 召回候选数
+    reranker_final_top_k: int = 5       # rerank 后保留条数
+    reranker_max_chars: int = 1500      # 每个 doc 送入 Cross-Encoder 的最大字符数
+    reranker_device: str = "cpu"        # "cpu" | "mps" | "cuda"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

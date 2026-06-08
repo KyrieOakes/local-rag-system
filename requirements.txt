@@ -22,3 +22,4 @@ numpy
 python-dotenv==1.2.2
 pydantic-settings==2.14.0
 tiktoken
+sentence-transformers

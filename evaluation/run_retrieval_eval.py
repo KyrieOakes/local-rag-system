@@ -34,6 +34,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from app.core.config import settings
 from app.rag.query_processor import process_query
+from app.rag.reranker import CrossEncoderReranker, HybridFusionReranker
 from app.rag.retriever import retrieve_relevant_documents
 from evaluation.retrieval_metrics.evaluator import evaluate_retrieval_case
 from evaluation.retrieval_metrics.matching import (
@@ -46,11 +47,26 @@ def main() -> None:
     args = _parse_args()
     examples = _load_jsonl(args.dataset)
 
+    # Build reranker if enabled
+    reranker = _build_reranker(args)
+
     per_question = []
     for example in examples:
         question = example["question"]
         retrieval_query = process_query(question)["rewritten_query"] if args.use_query_processor else question
-        retrieved_results = retrieve_relevant_documents(retrieval_query, top_k=args.top_k)
+
+        # Retrieve: wider fetch if reranker is active
+        retrieval_k = args.rerank_top_n if args.use_reranker else args.top_k
+        retrieved_results = retrieve_relevant_documents(retrieval_query, top_k=retrieval_k)
+
+        # Rerank: narrow down to final top_k
+        if args.use_reranker and len(retrieved_results) > args.top_k:
+            documents_for_rerank = [doc for doc, _score in retrieved_results]
+            retrieved_results = reranker.rerank(
+                query=retrieval_query,
+                documents=documents_for_rerank,
+                top_k=args.top_k,
+            )
 
         retrieved_items = [
             build_retrieved_item(
@@ -102,6 +118,24 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Evaluate production query rewriting before vector retrieval.",
     )
+    # ── Rerank 参数 ──
+    parser.add_argument(
+        "--use-reranker",
+        action="store_true",
+        help="Enable reranking of retrieval candidates.",
+    )
+    parser.add_argument(
+        "--reranker-type",
+        default="cross_encoder",
+        choices=["cross_encoder", "hybrid"],
+        help="Reranker implementation to use (default: cross_encoder).",
+    )
+    parser.add_argument(
+        "--rerank-top-n",
+        type=int,
+        default=20,
+        help="Number of candidates to retrieve for reranking (default: 20).",
+    )
     return parser.parse_args()
 
 
@@ -120,10 +154,23 @@ def _load_jsonl(path: str) -> list[dict[str, Any]]:
     return records
 
 
+def _build_reranker(args: argparse.Namespace):
+    """Build a reranker instance from CLI args. Returns None if not enabled."""
+    if not args.use_reranker:
+        return None
+
+    if args.reranker_type == "cross_encoder":
+        return CrossEncoderReranker()
+    elif args.reranker_type == "hybrid":
+        return HybridFusionReranker()
+    else:
+        return None
+
+
 def _build_report(args: argparse.Namespace, per_question: list[dict[str, Any]]) -> dict[str, Any]:
     aggregate = _aggregate_evaluations(per_question)
 
-    return {
+    report: dict[str, Any] = {
         "report_schema": "retrieval-eval-v1",
         "experiment_name": args.experiment_name,
         "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -144,6 +191,19 @@ def _build_report(args: argparse.Namespace, per_question: list[dict[str, Any]]) 
         "aggregate": aggregate,
         "questions": per_question,
     }
+
+    # Attach rerank configuration if used
+    if args.use_reranker:
+        report["rerank_config"] = {
+            "reranker_type": args.reranker_type,
+            "reranker_model": settings.reranker_model,
+            "rerank_top_n": args.rerank_top_n,
+            "final_top_k": args.top_k,
+            "max_chars": settings.reranker_max_chars,
+            "device": settings.reranker_device,
+        }
+
+    return report
 
 
 def _aggregate_evaluations(per_question: list[dict[str, Any]]) -> dict[str, dict[str, float]]:

@@ -1,5 +1,5 @@
 """
-RAG 查询服务层（核心编排 — 含 RAG 路由门控与会话上下文）。
+RAG 查询服务层（核心编排 — 含 RAG 路由门控、会话上下文、Rerank 精排）。
 
 query_rag() 编排完整的 RAG 查询流水线：
 STEP 1 — 接收用户输入（在 API 层完成）
@@ -8,6 +8,11 @@ STEP 2 — 查询预处理 + RAG 路由门控（query_processor）
   - Layer 1: LLM 统一路由：决定是否需要检索 + 意图检测 + 改写/直接回答
   - 分流：needs_rag=False → 跳过 STEP 3，直接返回 LLM 回答
 STEP 3 — 向量检索（仅 needs_rag=True 时执行）
+  - 若 rerank 启用：检索 reranker_candidate_top_n 条候选（如 20）
+  - 若 rerank 禁用：检索 top_k 条（如 5）
+STEP 3.5 — Rerank 精排（仅 reranker_type != "none" 时执行）
+  - Cross-Encoder / HybridFusion 对候选重排序
+  - 保留 reranker_final_top_k 条
 STEP 4 — 构建提示词
 STEP 5 — LLM 生成答案
 STEP 6 — 组装响应 + 记录日志
@@ -19,9 +24,11 @@ import threading
 import time
 import uuid
 
+from app.core.config import settings
 from app.rag.chain import generate_answer, generate_answer_stream
 from app.rag.query_processor import process_query
 from app.rag.query_logger import log_rag_query
+from app.rag.reranker import get_reranker
 from app.rag.retriever import retrieve_relevant_documents
 from app.schemas.rag import QueryResponse, SourceChunk
 
@@ -92,11 +99,34 @@ def query_rag(
     # RAG path — full pipeline
     retrieval_query = processed["rewritten_query"] or question
 
+    # Decide retrieval size: wider fetch for rerank, narrow otherwise
+    reranker_enabled = settings.reranker_type.lower() not in ("none", "")
+    retrieval_k = settings.reranker_candidate_top_n if reranker_enabled else top_k
+
     # STEP 3 — Vector retrieval
+    step3_start = time.perf_counter()
+    logger.info("[RAG][STEP 3] 向量检索开始 (retrieval_k=%d, reranker=%s)", retrieval_k, settings.reranker_type)
     retrieved_results = retrieve_relevant_documents(
         question=retrieval_query,
-        top_k=top_k,
+        top_k=retrieval_k,
     )
+    step3_elapsed = time.perf_counter() - step3_start
+    logger.info("[RAG][STEP 3] 向量检索完成，命中 %d 条，耗时 %.3fs", len(retrieved_results), step3_elapsed)
+
+    # STEP 3.5 — Rerank (only when enabled and candidates > final top_k)
+    rerank_elapsed = 0.0
+    if reranker_enabled and len(retrieved_results) > top_k:
+        step35_start = time.perf_counter()
+        logger.info("[RAG][STEP 3.5] Rerank 开始")
+        reranker = get_reranker()
+        documents_for_rerank = [doc for doc, _score in retrieved_results]
+        retrieved_results = reranker.rerank(
+            query=retrieval_query,
+            documents=documents_for_rerank,
+            top_k=top_k,
+        )
+        rerank_elapsed = time.perf_counter() - step35_start
+        logger.info("[RAG][STEP 3.5] Rerank 完成，保留 %d 条，耗时 %.3fs", len(retrieved_results), rerank_elapsed)
 
     documents = [document for document, _score in retrieved_results]
 
@@ -174,10 +204,34 @@ async def query_rag_stream(
 
     # RAG path — retrieve and stream
     retrieval_query = processed["rewritten_query"] or question
+
+    # Decide retrieval size: wider fetch for rerank, narrow otherwise
+    reranker_enabled = settings.reranker_type.lower() not in ("none", "")
+    retrieval_k = settings.reranker_candidate_top_n if reranker_enabled else top_k
+
+    step3_start = time.perf_counter()
+    logger.info("[RAG][STREAM][STEP 3] 向量检索开始 (retrieval_k=%d, reranker=%s)", retrieval_k, settings.reranker_type)
     retrieved_results = retrieve_relevant_documents(
         question=retrieval_query,
-        top_k=top_k,
+        top_k=retrieval_k,
     )
+    step3_elapsed = time.perf_counter() - step3_start
+    logger.info("[RAG][STREAM][STEP 3] 向量检索完成，命中 %d 条，耗时 %.3fs", len(retrieved_results), step3_elapsed)
+
+    # STEP 3.5 — Rerank
+    rerank_elapsed = 0.0
+    if reranker_enabled and len(retrieved_results) > top_k:
+        step35_start = time.perf_counter()
+        logger.info("[RAG][STREAM][STEP 3.5] Rerank 开始")
+        reranker = get_reranker()
+        documents_for_rerank = [doc for doc, _score in retrieved_results]
+        retrieved_results = reranker.rerank(
+            query=retrieval_query,
+            documents=documents_for_rerank,
+            top_k=top_k,
+        )
+        rerank_elapsed = time.perf_counter() - step35_start
+        logger.info("[RAG][STREAM][STEP 3.5] Rerank 完成，保留 %d 条，耗时 %.3fs", len(retrieved_results), rerank_elapsed)
 
     documents = [document for document, _score in retrieved_results]
     sources = _build_sources(retrieved_results)
