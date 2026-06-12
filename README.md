@@ -22,7 +22,7 @@
 - **🎯 Rerank 精排** — 可选 Cross-Encoder / Hybrid Fusion 重排序，提升检索精度
 - **⚡ 批量 Embedding** — 一次 API 调用处理最多 64 条文本，比逐条调用快数倍
 - **♻️ 增量更新** — SQLite checksum 数据库，文件未改则跳过，改过的文件自动删旧换新
-- **💬 多轮对话** — conversation_id + history 注入，代词消解，token 预算 ~2048
+- **💬 多轮对话 + 历史持久化** — conversation_id + history 注入，代词消解；SQLite 自动保存对话，侧边栏历史列表，刷新不丢失
 - **📋 查询日志** — 每次问答完整记录到 `logs/history/rag_queries.jsonl`，方便评估和调试
 - **🎨 Editorial Ink 主题** — 深色设计系统，Plus Jakarta Sans 字体，烟熏玻璃面板
 - **🔌 本地/云端双模式** — LLM 和 Embedding 均支持 LM Studio / Ollama / DeepSeek 等 OpenAI 兼容 API
@@ -41,7 +41,8 @@ FastAPI (:8000)
     ├── /documents                  文档列表
     ├── /documents/{source}         删除文档
     ├── /rag/query                  RAG 问答 (同步)
-    └── /rag/query/stream           RAG 问答 (SSE 流式)
+    ├── /rag/query/stream           RAG 问答 (SSE 流式)
+    └── /conversations              对话历史管理
     │
     ▼
 RAG Pipeline
@@ -120,6 +121,9 @@ python ingest.py --input_dir data/engineering --batch_size 64
 | `DELETE` | `/documents/{source}` | 删除文档及所有分块 |
 | `POST` | `/rag/query` | RAG 问答（同步） |
 | `POST` | `/rag/query/stream` | RAG 问答（SSE 流式） |
+| `GET` | `/conversations` | 对话历史列表 |
+| `GET` | `/conversations/{id}` | 对话详情（含全部消息） |
+| `DELETE` | `/conversations/{id}` | 删除对话 |
 
 **问答示例：**
 
@@ -184,6 +188,7 @@ local-rag-system/
 │   │   ├── vectorstore.py            Qdrant 操作
 │   │   ├── retriever.py              向量检索
 │   │   ├── reranker.py               Rerank 精排 (Cross-Encoder/Hybrid)
+│   │   ├── conversation_store.py     对话持久化 (SQLite)
 │   │   ├── prompt.py                 System Prompt
 │   │   ├── chain.py                  答案生成链 (同步 + 流式)
 │   │   └── ingestion/                批量摄入 pipeline
@@ -199,7 +204,8 @@ local-rag-system/
 ├── ingest.py                         CLI 批量摄入脚本
 ├── data/
 │   ├── raw/                          上传文件
-│   └── ingestion_state.db            Checksum 数据库
+│   ├── ingestion_state.db            Checksum 数据库
+│   └── conversations.db              对话历史数据库
 ├── logs/
 │   └── history/rag_queries.jsonl     查询历史
 ├── docker-compose.yml                Qdrant 容器

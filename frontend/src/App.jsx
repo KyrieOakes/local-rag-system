@@ -26,6 +26,9 @@ import {
   queryRagStream,
   listDocuments,
   deleteDocument,
+  listConversations,
+  getConversation,
+  deleteConversation,
 } from "./api";
 import "./App.css";
 
@@ -35,6 +38,9 @@ function App() {
   const [input, setInput] = useState("");
   const [loadingQuery, setLoadingQuery] = useState(false);
   const [conversationId, setConversationId] = useState(null);
+
+  const [conversations, setConversations] = useState([]);
+  const [loadingConversation, setLoadingConversation] = useState(false);
 
   const [showSidebar, setShowSidebar] = useState(false);
 
@@ -90,6 +96,58 @@ function App() {
 
     initCheck();
   }, []);
+
+  // Load conversation list on mount
+  useEffect(() => {
+    loadConversationList();
+  }, []);
+
+  async function loadConversationList() {
+    try {
+      const list = await listConversations();
+      setConversations(list || []);
+    } catch (err) {
+      console.error("Failed to load conversation list:", err);
+    }
+  }
+
+  async function switchConversation(id) {
+    if (loadingConversation) return;
+    setLoadingConversation(true);
+    try {
+      const conv = await getConversation(id);
+      setConversationId(conv.id);
+      setMessages(
+        conv.messages.map((m, i) => ({
+          id: Date.now() + i,
+          role: m.role,
+          content: m.content,
+          sources: m.sources || [],
+          routing: m.routing || null,
+          loading: false,
+        }))
+      );
+    } catch (err) {
+      console.error("Failed to load conversation:", err);
+    } finally {
+      setLoadingConversation(false);
+    }
+  }
+
+  async function handleDeleteConversation(id, e) {
+    e.stopPropagation();
+    if (loadingConversation) return;
+    try {
+      await deleteConversation(id);
+      // If the deleted conversation was active, reset to new chat
+      if (conversationId === id) {
+        newChat();
+      }
+      await loadConversationList();
+    } catch (err) {
+      console.error("Failed to delete conversation:", err);
+    }
+  }
 
   useEffect(() => {
     function handleClickOutside(e) {
@@ -319,6 +377,7 @@ function App() {
               )
             );
             setLoadingQuery(false);
+            loadConversationList();
           },
           onError({ message }) {
             setMessages((prev) =>
@@ -419,6 +478,7 @@ function App() {
     setMessages([]);
     setInput("");
     setConversationId(null);
+    loadConversationList();
   }
 
   function fileTypeIcon(fileType) {
@@ -472,6 +532,17 @@ function App() {
     return "#ef4444";
   }
 
+  function formatConvTime(timestamp) {
+    if (!timestamp) return "";
+    const now = Date.now() / 1000;
+    const diff = now - timestamp;
+    if (diff < 60) return "just now";
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
+    return new Date(timestamp * 1000).toLocaleDateString();
+  }
+
   function getFileResult(filename) {
     if (!Array.isArray(uploadResults)) return null;
     return uploadResults.find((r) => r.filename === filename) || null;
@@ -503,6 +574,61 @@ function App() {
           </svg>
           New Chat
         </button>
+
+        <div className="sidebar-section">
+          <div className="section-title">Conversations</div>
+          <div className="conversation-list">
+            {conversations.length === 0 ? (
+              <div className="conv-empty">
+                {conversations === null ? "Loading..." : "No conversations yet"}
+              </div>
+            ) : (
+              conversations.map((conv) => (
+                <div
+                  key={conv.id}
+                  className={`conv-item ${
+                    conv.id === conversationId ? "active" : ""
+                  }`}
+                  onClick={() => switchConversation(conv.id)}
+                >
+                  <div className="conv-info">
+                    <div className="conv-title">
+                      {conv.title || "Untitled"}
+                    </div>
+                    <div className="conv-meta">
+                      {conv.message_count || 0} msgs
+                      {conv.updated_at && (
+                        <>
+                          {" · "}
+                          {formatConvTime(conv.updated_at)}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    className="conv-delete-btn"
+                    onClick={(e) => handleDeleteConversation(conv.id, e)}
+                    title="Delete conversation"
+                  >
+                    <svg
+                      width="12"
+                      height="12"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                    >
+                      <polyline points="3 6 5 6 21 6"></polyline>
+                      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
+                      <path d="M10 11v6"></path>
+                      <path d="M14 11v6"></path>
+                    </svg>
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
 
         <div className="sidebar-section">
           <div className="section-title">System</div>

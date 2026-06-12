@@ -70,6 +70,21 @@ export async function deleteDocument(source) {
   return res.data;
 }
 
+export async function listConversations() {
+  const res = await api.get('/conversations');
+  return res.data;
+}
+
+export async function getConversation(conversationId) {
+  const res = await api.get(`/conversations/${conversationId}`);
+  return res.data;
+}
+
+export async function deleteConversation(conversationId) {
+  const res = await api.delete(`/conversations/${conversationId}`);
+  return res.data;
+}
+
 /**
  * Stream a RAG query via SSE (Server-Sent Events).
  *

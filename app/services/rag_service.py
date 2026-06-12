@@ -27,6 +27,7 @@ import uuid
 
 from app.core.config import settings
 from app.rag.chain import generate_answer, generate_answer_stream
+from app.rag.conversation_store import get_conversation_store
 from app.rag.query_processor import process_query
 from app.rag.query_logger import log_rag_query
 from app.rag.reranker import get_reranker
@@ -34,6 +35,28 @@ from app.rag.retriever import retrieve_relevant_documents
 from app.schemas.rag import QueryResponse, SourceChunk
 
 logger = logging.getLogger(__name__)
+
+
+def _save_exchange_safe(
+    conversation_id: str,
+    user_message: str,
+    assistant_message: str,
+    sources: list,
+    routing: str,
+):
+    """Best-effort conversation persistence — never raises."""
+    try:
+        store = get_conversation_store()
+        sources_raw = [s.model_dump() if hasattr(s, "model_dump") else s for s in sources]
+        store.save_exchange(
+            conversation_id=conversation_id,
+            user_message=user_message,
+            assistant_message=assistant_message,
+            sources=sources_raw,
+            routing=routing,
+        )
+    except Exception:
+        logger.exception("Failed to persist conversation %s", conversation_id)
 
 
 def _build_sources(retrieved_results: list) -> list[SourceChunk]:
@@ -93,6 +116,12 @@ def query_rag(
             target=log_rag_query,
             args=(question, processed.get("rewritten_query", question),
                   processed["intent"], [], answer, top_k),
+            daemon=True,
+        ).start()
+        # Persist conversation (non-blocking, best-effort)
+        threading.Thread(
+            target=_save_exchange_safe,
+            args=(conversation_id, question, answer, [], routing),
             daemon=True,
         ).start()
         return response
@@ -161,6 +190,13 @@ def query_rag(
         daemon=True,
     ).start()
 
+    # Persist conversation (non-blocking, best-effort)
+    threading.Thread(
+        target=_save_exchange_safe,
+        args=(conversation_id, question, answer, sources, routing),
+        daemon=True,
+    ).start()
+
     return response
 
 
@@ -208,6 +244,11 @@ async def query_rag_stream(
             target=log_rag_query,
             args=(question, processed.get("rewritten_query", question),
                   processed["intent"], [], answer, top_k),
+            daemon=True,
+        ).start()
+        threading.Thread(
+            target=_save_exchange_safe,
+            args=(conversation_id, question, answer, [], routing),
             daemon=True,
         ).start()
         return
@@ -275,5 +316,12 @@ async def query_rag_stream(
         target=log_rag_query,
         args=(question, retrieval_query, processed["intent"],
               retrieved_results, full_answer, top_k),
+        daemon=True,
+    ).start()
+
+    # Persist conversation (non-blocking, best-effort)
+    threading.Thread(
+        target=_save_exchange_safe,
+        args=(conversation_id, question, full_answer, sources, routing),
         daemon=True,
     ).start()
