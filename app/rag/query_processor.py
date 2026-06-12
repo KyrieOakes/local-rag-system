@@ -58,8 +58,8 @@ QUERY_PROCESSING_SYSTEM_PROMPT = """\
 Analyze the user query for a RAG system. Perform routing first, then act accordingly.
 
 ROUTING rules:
-- YES: query needs document search (asks about uploaded docs, specific technical content, "my documents", "the knowledge base", etc.)
-- NO: query is answerable from general knowledge (greetings, chitchat, general programming, math, common knowledge, opinions)
+- YES: default choice. The query likely relates to content in the knowledge base (technical topics, documents, projects, concepts, facts, how-to questions, comparisons, explanations). When in doubt, route to RAG.
+- NO: ONLY when the query is clearly NOT about any document content — pure greetings, simple chitchat ("how are you", "what's your name"), or meta-questions about the system itself ("what can you do", "who are you").
 
 If ROUTING=YES, also classify INTENT: question_answering | summarization | comparison | fact_lookup, then rewrite the query for vector search (expand vague terms, add precise keywords).
 
