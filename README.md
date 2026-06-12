@@ -17,9 +17,12 @@
 
 - **📥 文档上传** — 支持 PDF、TXT、Markdown、DOCX，上传后自动分块、向量化、入库
 - **📂 批量摄入** — `python ingest.py --input_dir data/engineering --batch_size 64`，递归扫描、批量 embedding、增量更新
-- **🔍 智能问答** — 意图识别 + 查询改写 + 向量检索 + LLM 生成，答案附带来源引用和相似度打分
+- **🔍 智能问答** — 两层路由门控（关键词预过滤 + LLM 路由）+ 意图识别 + 查询改写 + 向量检索 + Rerank 精排 + LLM 生成
+- **⚡ SSE 流式输出** — `/rag/query/stream` 端点逐 token 推送，状态事件实时显示管道进度
+- **🎯 Rerank 精排** — 可选 Cross-Encoder / Hybrid Fusion 重排序，提升检索精度
 - **⚡ 批量 Embedding** — 一次 API 调用处理最多 64 条文本，比逐条调用快数倍
 - **♻️ 增量更新** — SQLite checksum 数据库，文件未改则跳过，改过的文件自动删旧换新
+- **💬 多轮对话** — conversation_id + history 注入，代词消解，token 预算 ~2048
 - **📋 查询日志** — 每次问答完整记录到 `logs/history/rag_queries.jsonl`，方便评估和调试
 - **🎨 Editorial Ink 主题** — 深色设计系统，Plus Jakarta Sans 字体，烟熏玻璃面板
 - **🔌 本地/云端双模式** — LLM 和 Embedding 均支持 LM Studio / Ollama / DeepSeek 等 OpenAI 兼容 API
@@ -33,21 +36,22 @@ Browser (:5173)
     │
     ▼
 FastAPI (:8000)
-    ├── /health                  健康检查
-    ├── /documents/upload        上传文档
-    ├── /documents               文档列表
-    ├── /documents/{source}      删除文档
-    └── /rag/query               RAG 问答 (top_k=5)
+    ├── /health                     健康检查
+    ├── /documents/upload           上传文档
+    ├── /documents                  文档列表
+    ├── /documents/{source}         删除文档
+    ├── /rag/query                  RAG 问答 (同步)
+    └── /rag/query/stream           RAG 问答 (SSE 流式)
     │
     ▼
 RAG Pipeline
     摄入: loader → splitter → batch_embedder → bulk_writer → Qdrant
-    问答: query_processor → retriever → prompt → LLM → answer + sources
+    问答: query_processor(routing gate) → retriever → reranker(可选) → prompt → LLM → SSE tokens
     日志: query_logger → terminal + logs/history/rag_queries.jsonl
     │
     ▼
 Qdrant (Docker, :6333)          LM Studio (:1234)
-  向量存储 + 语义检索             LLM + Embedding
+  向量存储 + 语义检索             LLM + Embedding + Reranker
 ```
 
 ---
@@ -114,7 +118,8 @@ python ingest.py --input_dir data/engineering --batch_size 64
 | `POST` | `/documents/upload` | 上传单个文件 |
 | `POST` | `/documents/upload-batch` | 批量上传文件 |
 | `DELETE` | `/documents/{source}` | 删除文档及所有分块 |
-| `POST` | `/rag/query` | RAG 问答 |
+| `POST` | `/rag/query` | RAG 问答（同步） |
+| `POST` | `/rag/query/stream` | RAG 问答（SSE 流式） |
 
 **问答示例：**
 
@@ -139,6 +144,28 @@ python ingest.py --input_dir data/engineering --batch_size 64
 }
 ```
 
+**流式问答 SSE 事件：**
+
+```
+event: routing
+data: {"routing":"rag","conversation_id":"a1b2c3d4"}
+
+event: status
+data: {"phase":"searching","message":"Searching documents..."}
+
+event: status
+data: {"phase":"generating","message":"Generating answer..."}
+
+event: token
+data: "The Guild project is a cross-functional..."
+
+event: sources
+data: [{"content":"...","source":"guild_project.md","score":0.86}]
+
+event: done
+data: {}
+```
+
 ---
 
 ## 📂 项目结构
@@ -156,8 +183,9 @@ local-rag-system/
 │   │   ├── query_logger.py           查询日志 (JSONL + terminal)
 │   │   ├── vectorstore.py            Qdrant 操作
 │   │   ├── retriever.py              向量检索
+│   │   ├── reranker.py               Rerank 精排 (Cross-Encoder/Hybrid)
 │   │   ├── prompt.py                 System Prompt
-│   │   ├── chain.py                  答案生成链
+│   │   ├── chain.py                  答案生成链 (同步 + 流式)
 │   │   └── ingestion/                批量摄入 pipeline
 │   │       ├── checksum_store.py     SQLite MD5 校验
 │   │       ├── batch_embedder.py     批量 Embedding
@@ -189,7 +217,9 @@ local-rag-system/
 | 向量库 | Qdrant (Docker) |
 | LLM | qwen3-8b-mlx / DeepSeek（OpenAI 兼容 API） |
 | Embedding | text-embedding-qwen3-embedding-4b |
+| Rerank | sentence-transformers (BAAI/bge-reranker-base / Hybrid Fusion) |
 | 文本处理 | PyPDF + Docx2txtLoader + MarkdownHeaderTextSplitter |
+| 流式传输 | SSE (Server-Sent Events) via FastAPI StreamingResponse + LangChain astream |
 | 前端 | React 19 + Vite + react-markdown + Axios |
 | 摄入 | `ingest.py` CLI + `app/rag/ingestion/` 模块 |
 
