@@ -18,6 +18,7 @@ STEP 5 — LLM 生成答案
 STEP 6 — 组装响应 + 记录日志
 """
 
+import asyncio
 import json
 import logging
 import threading
@@ -164,8 +165,11 @@ def query_rag(
 
 
 def _sse_event(event: str, data: dict | str) -> str:
-    """Format a Server-Sent Event line."""
-    payload = data if isinstance(data, str) else json.dumps(data, ensure_ascii=False)
+    """Format a Server-Sent Event line. All data is JSON-encoded for consistency."""
+    if isinstance(data, str):
+        payload = json.dumps(data, ensure_ascii=False)
+    else:
+        payload = json.dumps(data, ensure_ascii=False)
     return f"event: {event}\ndata: {payload}\n\n"
 
 
@@ -188,10 +192,16 @@ async def query_rag_stream(
     # Yield routing event
     yield _sse_event("routing", {"routing": routing, "conversation_id": conversation_id})
 
-    # Non-RAG path — send direct answer as single chunk
+    # Non-RAG path — stream direct answer word-by-word for typing effect
     if not needs_rag:
         answer = processed.get("direct_answer") or "I'm not sure how to help with that."
-        yield _sse_event("token", answer)
+        yield _sse_event("status", {"phase": "responding", "message": "Preparing response..."})
+        # Stream answer word-by-word so the frontend renders progressively
+        words = answer.split()
+        for i, word in enumerate(words):
+            token = word + (" " if i < len(words) - 1 else "")
+            yield _sse_event("token", token)
+            await asyncio.sleep(0)  # yield event loop so ASGI flushes each chunk
         yield _sse_event("sources", [])
         yield _sse_event("done", {})
         threading.Thread(
@@ -209,6 +219,8 @@ async def query_rag_stream(
     reranker_enabled = settings.reranker_type.lower() not in ("none", "")
     retrieval_k = settings.reranker_candidate_top_n if reranker_enabled else top_k
 
+    yield _sse_event("status", {"phase": "searching", "message": "Searching documents..."})
+
     step3_start = time.perf_counter()
     logger.info("[RAG][STREAM][STEP 3] 向量检索开始 (retrieval_k=%d, reranker=%s)", retrieval_k, settings.reranker_type)
     retrieved_results = retrieve_relevant_documents(
@@ -221,6 +233,7 @@ async def query_rag_stream(
     # STEP 3.5 — Rerank
     rerank_elapsed = 0.0
     if reranker_enabled and len(retrieved_results) > top_k:
+        yield _sse_event("status", {"phase": "reranking", "message": "Reranking results..."})
         step35_start = time.perf_counter()
         logger.info("[RAG][STREAM][STEP 3.5] Rerank 开始")
         reranker = get_reranker()
@@ -236,15 +249,22 @@ async def query_rag_stream(
     documents = [document for document, _score in retrieved_results]
     sources = _build_sources(retrieved_results)
 
+    yield _sse_event("status", {"phase": "generating", "message": "Generating answer..."})
+
     # Stream tokens from LLM
     full_answer = ""
-    async for token in generate_answer_stream(
-        question=question,
-        documents=documents,
-        history=history,
-    ):
-        full_answer += token
-        yield _sse_event("token", token)
+    try:
+        async for token in generate_answer_stream(
+            question=question,
+            documents=documents,
+            history=history,
+        ):
+            full_answer += token
+            yield _sse_event("token", token)
+    except Exception as exc:
+        logger.exception("LLM streaming failed mid-stream")
+        yield _sse_event("error", {"message": f"Generation failed: {exc}", "phase": "generating"})
+        full_answer += f"\n\n[Error: {exc}]"
 
     # Yield sources + done
     yield _sse_event("sources", [s.model_dump() for s in sources])

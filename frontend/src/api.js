@@ -80,10 +80,11 @@ export async function deleteDocument(source) {
  * @param {boolean} params.forceRag
  * @param {Object} callbacks
  * @param {function} callbacks.onRouting - ({routing, conversation_id}) => void
+ * @param {function} callbacks.onStatus - ({phase, message}) => void
  * @param {function} callbacks.onToken - (token: string) => void
  * @param {function} callbacks.onSources - (sources: Array) => void
  * @param {function} callbacks.onDone - () => void
- * @param {function} callbacks.onError - (error: Error) => void
+ * @param {function} callbacks.onError - ({message, phase}) => void
  */
 export async function queryRagStream(
   { question, conversationId, history, forceRag },
@@ -108,6 +109,7 @@ export async function queryRagStream(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let currentEvent = null; // persists across reader.read() calls to handle split event/data lines
 
   try {
     while (true) {
@@ -120,7 +122,6 @@ export async function queryRagStream(
       const lines = buffer.split('\n');
       buffer = lines.pop() || ''; // keep incomplete line in buffer
 
-      let currentEvent = null;
       for (const line of lines) {
         if (line.startsWith('event: ')) {
           currentEvent = line.slice(7).trim();
@@ -132,8 +133,11 @@ export async function queryRagStream(
               case 'routing':
                 callbacks.onRouting?.(parsed);
                 break;
+              case 'status':
+                callbacks.onStatus?.(parsed);
+                break;
               case 'token':
-                callbacks.onToken?.(typeof parsed === 'string' ? parsed : data);
+                callbacks.onToken?.(parsed);
                 break;
               case 'sources':
                 callbacks.onSources?.(parsed);
@@ -141,12 +145,13 @@ export async function queryRagStream(
               case 'done':
                 callbacks.onDone?.();
                 break;
+              case 'error':
+                callbacks.onError?.(parsed);
+                break;
             }
           } catch {
-            // If JSON parse fails but event is 'token', treat data as raw string
-            if (currentEvent === 'token') {
-              callbacks.onToken?.(data);
-            }
+            // Safety net: if JSON parse fails unexpectedly, log and ignore
+            console.warn('SSE: failed to parse data for event', currentEvent, data);
           }
           currentEvent = null;
         }

@@ -46,9 +46,11 @@ async def rag_query_stream(request: QueryRequest):
 
     Events emitted:
     - routing: {routing, conversation_id}
-    - token: <string token>
+    - status: {phase, message}         -- pipeline progress indicator
+    - token: "<string>"                -- individual answer token (JSON-encoded)
     - sources: [...SourceChunk]
     - done: {}
+    - error: {message, phase}          -- emitted on streaming failure
     """
     try:
         logger.info("[RAG][STREAM] 流式查询开始")

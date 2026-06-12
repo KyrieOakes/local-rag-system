@@ -256,6 +256,7 @@ function App() {
         sources: [],
         routing: null,
         loading: true,
+        statusText: null,
       },
     ]);
 
@@ -279,6 +280,13 @@ function App() {
             setMessages((prev) =>
               prev.map((msg) =>
                 msg.id === placeholderId ? { ...msg, routing } : msg
+              )
+            );
+          },
+          onStatus({ message }) {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === placeholderId ? { ...msg, statusText: message } : msg
               )
             );
           },
@@ -311,6 +319,16 @@ function App() {
               )
             );
             setLoadingQuery(false);
+          },
+          onError({ message }) {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === placeholderId
+                  ? { ...msg, loading: false, statusText: null, routing: "error" }
+                  : msg
+              )
+            );
+            console.error("Stream error:", message);
           },
         }
       );
@@ -993,10 +1011,15 @@ function App() {
 
               <div className="message-content">
                 {msg.loading ? (
-                  <div className="typing-indicator">
-                    <span></span>
-                    <span></span>
-                    <span></span>
+                  <div>
+                    <div className="typing-indicator">
+                      <span></span>
+                      <span></span>
+                      <span></span>
+                    </div>
+                    {msg.statusText && (
+                      <div className="stream-status">{msg.statusText}</div>
+                    )}
                   </div>
                 ) : (
                   <>

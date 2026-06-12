@@ -51,7 +51,7 @@ python -m unittest discover tests/
 
 - `app/main.py` — App factory, CORS middleware (allows `:5173`), route registration
 - `app/api/` — Route handlers: `health.py` (`GET /health`), `documents.py` (`POST /upload`, `POST /upload-batch`, `GET /`, `DELETE /{source}`), `rag.py` (`POST /rag/query` + `POST /rag/query/stream` SSE streaming)
-- `app/services/` — Business logic orchestration. `ingestion_service.py` delegates to the unified `ingest_file_paths` pipeline; `rag_service.py` orchestrates the full RAG pipeline with RAG routing gate, conversation context, rerank step (STEP 3.5, conditional on `RERANKER_TYPE`), async logging, and SSE streaming (`query_rag` + `query_rag_stream`); `document_service.py` handles list/delete by querying Qdrant directly
+- `app/services/` — Business logic orchestration. `ingestion_service.py` delegates to the unified `ingest_file_paths` pipeline; `rag_service.py` orchestrates the full RAG pipeline with RAG routing gate, conversation context, rerank step (STEP 3.5, conditional on `RERANKER_TYPE`), async logging, and SSE streaming (`query_rag` + `query_rag_stream` — emits routing/status/token/sources/done/error events, with word-by-word streaming for non-RAG answers and try/except error recovery); `document_service.py` handles list/delete by querying Qdrant directly
 - `ingest.py` — Standalone CLI script at repo root. `python ingest.py --input_dir <dir> --batch_size <n> [--collection_name <name>]`
 - `app/rag/` — The RAG pipeline primitives:
   - `loader.py` — Loads PDF (PyPDF), TXT/MD (TextLoader), DOCX (Docx2txtLoader) via LangChain document loaders
@@ -76,10 +76,10 @@ python -m unittest discover tests/
 
 **Frontend** (`frontend/`) — React 19 + Vite, single-page chat UI with "Editorial Ink" dark theme:
 
-- `src/App.jsx` — Entire application in one component (sidebar, chat messages, upload modal, document manager modal). Manages `conversationId` state for multi-turn conversations; builds recent history (last 10 messages) for each request; handles `@rag` prefix to force retrieval mode; renders SSE-streamed tokens in real-time; shows routing badge ("Searched documents" / "Direct response" / "Quick reply") on each assistant message. No router — all UI state managed via `useState`.
+- `src/App.jsx` — Entire application in one component (sidebar, chat messages, upload modal, document manager modal). Manages `conversationId` state for multi-turn conversations; builds recent history (last 10 messages) for each request; handles `@rag` prefix to force retrieval mode; renders SSE-streamed tokens in real-time; shows pipeline status text ("Searching documents...") during loading; shows routing badge ("Searched documents" / "Direct response" / "Quick reply") on each assistant message. No router — all UI state managed via `useState`.
 - `src/App.css` — Complete design system with CSS custom properties (design tokens for colors, shadows, radii, transitions). Smoked-glass panels, refined typography, subtle ambient light bleeds. Includes `.routing-badge` styles for rag/direct/greeting indicators.
 - `src/index.css` — Base reset, grain texture overlay, imports Plus Jakarta Sans (Google Fonts) with weight range 300–800.
-- `src/api.js` — Axios instance pointing at `http://127.0.0.1:8000`, exports `healthCheck`, `uploadDocument`, `uploadDocuments`, `queryRag` (with conversationId/history/forceRag params), `queryRagStream` (fetch-based SSE reader with event callbacks), `listDocuments`, `deleteDocument`
+- `src/api.js` — Axios instance pointing at `http://127.0.0.1:8000`, exports `healthCheck`, `uploadDocument`, `uploadDocuments`, `queryRag` (with conversationId/history/forceRag params), `queryRagStream` (fetch-based SSE reader with event callbacks for routing/status/token/sources/done/error), `listDocuments`, `deleteDocument`
 - Frontend dependencies include `react-markdown` for rendering LLM Markdown responses
 
 **Evaluation** (`evaluation/`) — Offline retrieval quality assessment:
