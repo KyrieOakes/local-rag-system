@@ -22,12 +22,16 @@ def get_llm() -> ChatOpenAI:
             base_url=settings.cloud_llm_base_url,
             api_key=settings.cloud_llm_api_key,
             temperature=0.2,
+            timeout=30,
+            max_retries=1,
         )
 
     # 默认: 本地 LLM (LM Studio / Ollama)
     return ChatOpenAI(
-        model=settings.llm_model, 
+        model=settings.llm_model,
         base_url=settings.llm_base_url,
         api_key=settings.llm_api_key,
         temperature=0.2,
+        timeout=30,
+        max_retries=1,
     )
