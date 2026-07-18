@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 ## Development commands
 
@@ -32,13 +32,7 @@ pip install -r requirements.txt
 
 Copy `.env.example` to `.env` before starting. The backend reads configuration from `.env` via pydantic-settings — `.env` values override defaults in `app/core/config.py`. All modules import the global `settings` singleton.
 
-### Secrets and credentials
-
-- Never commit API keys, access tokens, passwords, private keys, connection strings with credentials, or real secrets to source code, tests, logs, notebooks, examples, screenshots, fixtures, or documentation.
-- Cloud credentials must be supplied only through the ignored local `.env` file or the process environment. Source-code defaults must be empty; local mock/service placeholders such as `lm-studio` are allowed only when they are not real credentials.
-- `.env.example` must contain variable names and safe blank/placeholding values only. Never copy values from `.env` into it.
-- Before committing, inspect the staged diff for secrets. If a secret is ever committed, immediately revoke/rotate it, remove it from the current tree, rewrite Git history, and force-push the sanitized branch. Deleting it only in a later commit is insufficient.
-- Do not print secret values in terminal output, exception messages, test snapshots, query logs, or DevLogs. Redact them when diagnosing configuration issues.
+Never commit real API keys, tokens, passwords, or other credentials. Cloud secrets must come only from the ignored `.env` file or process environment; source defaults and `.env.example` values must be blank/safe placeholders. If a secret is committed, revoke it and rewrite Git history rather than only deleting it in a later commit.
 
 ```bash
 # Reset vector DB + checksum store (required when changing embedding/chunking config)
@@ -46,7 +40,6 @@ python scripts/clear_qdrant.py && rm -f data/ingestion_state.db
 
 # Evaluation (offline retrieval quality assessment)
 python evaluation/run_retrieval_eval.py --dataset evaluation/datasets/golden_retrieval.example.jsonl --top-k 5 --experiment-name my-experiment
-python evaluation/run_retrieval_eval.py --dataset ... --top-k 5 --use-reranker --reranker-type cross_encoder --rerank-top-n 20 --experiment-name rerank-test
 jupyter notebook evaluation/retrieval_eval_pipeline.ipynb   # full pipeline + strategy comparison
 
 # Unit tests
@@ -59,7 +52,7 @@ python -m unittest discover tests/
 
 - `app/main.py` — App factory, CORS middleware (allows `:5173`), route registration
 - `app/api/` — Route handlers: `health.py` (`GET /health`), `documents.py` (`POST /upload`, `POST /upload-batch`, `GET /`, `DELETE /{source}`), `rag.py` (`POST /rag/query` + `POST /rag/query/stream` SSE streaming), `conversations.py` (`GET /conversations`, `GET /conversations/{id}`, `DELETE /conversations/{id}`)
-- `app/services/` — Business logic orchestration. `ingestion_service.py` delegates to the unified `ingest_file_paths` pipeline; `rag_service.py` orchestrates the full RAG pipeline with RAG routing gate, conversation context, rerank step (STEP 3.5, conditional on `RERANKER_TYPE`), async logging, and SSE streaming (`query_rag` + `query_rag_stream` — emits routing/status/token/sources/done/error events, with word-by-word streaming for non-RAG answers and try/except error recovery); `document_service.py` handles list/delete by querying Qdrant directly
+- `app/services/` — Business logic orchestration. `ingestion_service.py` delegates to the unified `ingest_file_paths` pipeline; `rag_service.py` orchestrates the full RAG pipeline with RAG routing gate, conversation context, async logging, and SSE streaming (`query_rag` + `query_rag_stream`); `document_service.py` handles list/delete by querying Qdrant directly
 - `ingest.py` — Standalone CLI script at repo root. `python ingest.py --input_dir <dir> --batch_size <n> [--collection_name <name>]`
 - `app/rag/` — The RAG pipeline primitives:
   - `loader.py` — Loads PDF (PyPDF), TXT/MD (TextLoader), DOCX (Docx2txtLoader) via LangChain document loaders
@@ -68,7 +61,6 @@ python -m unittest discover tests/
   - `query_processor.py` — Two-layer RAG routing gate: **Layer 0** keyword pre-filter (regex-based, catches greetings/thanks/goodbyes/meta-questions with zero LLM cost); **Layer 1** unified LLM call that simultaneously decides `needs_rag`, detects intent, and either rewrites the query for retrieval or generates a direct answer. Accepts conversation history for pronoun resolution.
   - `vectorstore.py` — QdrantVectorStore singleton; also contains `list_all_documents()` and `delete_document_by_source()`
   - `retriever.py` — `similarity_search_with_score` against the vectorstore
-  - `reranker.py` — Pluggable reranking module for post-retrieval precision. Abstract `BaseReranker` interface with three implementations: `NoOpReranker` (pass-through), `CrossEncoderReranker` (local sentence-transformers cross-encoder, lazy-loaded), `HybridFusionReranker` (vector + keyword score fusion, no extra model). Factory: `get_reranker()` returns singleton based on `RERANKER_TYPE` config. Workflow: vector search retrieves `RERANKER_CANDIDATE_TOP_N` (e.g. 20), reranker narrows to `RERANKER_FINAL_TOP_K` (e.g. 5). Preserves `vector_score` and `rerank_score` in document metadata. Falls back to vector-only results on model load failure.
   - `chain.py` — Builds a LangChain chain: `rag_prompt | llm | StrOutputParser`. `generate_answer()` for sync; `generate_answer_stream()` async generator for SSE token streaming. Formats conversation history with ~2048 token budget.
   - `prompt.py` — System prompt template with `{history}` and `{context}` placeholders; instructs LLM to write natural flowing prose grounded in context + conversation
   - `query_logger.py` — Writes full query trace to `logs/history/rag_queries.jsonl` + brief terminal summary. Called from background thread (non-blocking).
@@ -84,10 +76,10 @@ python -m unittest discover tests/
 
 **Frontend** (`frontend/`) — React 19 + Vite, single-page chat UI with "Editorial Ink" dark theme:
 
-- `src/App.jsx` — Entire application in one component (sidebar, chat messages, upload modal, document manager modal). Manages `conversationId` state for multi-turn conversations; builds recent history (last 10 messages) for each request; handles `@rag` prefix to force retrieval mode; renders SSE-streamed tokens in real-time; shows pipeline status text ("Searching documents...") during loading; shows routing badge ("Searched documents" / "Direct response" / "Quick reply") on each assistant message. No router — all UI state managed via `useState`.
+- `src/App.jsx` — Entire application in one component (sidebar, chat messages, upload modal, document manager modal). Manages `conversationId` state for multi-turn conversations; builds recent history (last 10 messages) for each request; handles `@rag` prefix to force retrieval mode; renders SSE-streamed tokens in real-time; shows routing badge ("Searched documents" / "Direct response" / "Quick reply") on each assistant message. No router — all UI state managed via `useState`.
 - `src/App.css` — Complete design system with CSS custom properties (design tokens for colors, shadows, radii, transitions). Smoked-glass panels, refined typography, subtle ambient light bleeds. Includes `.routing-badge` styles for rag/direct/greeting indicators.
 - `src/index.css` — Base reset, grain texture overlay, imports Plus Jakarta Sans (Google Fonts) with weight range 300–800.
-- `src/api.js` — Axios instance pointing at `http://127.0.0.1:8000`, exports `healthCheck`, `uploadDocument`, `uploadDocuments`, `queryRag` (with conversationId/history/forceRag params), `queryRagStream` (fetch-based SSE reader with event callbacks for routing/status/token/sources/done/error), `listDocuments`, `deleteDocument`
+- `src/api.js` — Axios instance pointing at `http://127.0.0.1:8000`, exports `healthCheck`, `uploadDocument`, `uploadDocuments`, `queryRag` (with conversationId/history/forceRag params), `queryRagStream` (fetch-based SSE reader with event callbacks), `listDocuments`, `deleteDocument`
 - Frontend dependencies include `react-markdown` for rendering LLM Markdown responses
 
 **Evaluation** (`evaluation/`) — Offline retrieval quality assessment:
@@ -103,26 +95,14 @@ python -m unittest discover tests/
 - `datasets/golden_retrieval.example.jsonl` — 22 annotated question→relevant_sources examples covering 8 topic areas
 - Visualization dependencies: `matplotlib`, `seaborn`, `pandas`, `jupyter`, `nbconvert`
 
-**Tests** (`tests/`) — `unittest` suite with offline FastAPI endpoint and retrieval-evaluation tests. Endpoint tests use `TestClient` and mocks at Qdrant/LLM/storage boundaries. Coverage includes health/OpenAPI, document upload/list/delete, synchronous and SSE RAG contracts, conversation history APIs, configuration secret defaults, and retrieval metrics/matching/evaluation.
+**Tests** (`tests/`) — `unittest` suite with 56 offline tests. FastAPI endpoint tests use `TestClient` and mock Qdrant/LLM/storage boundaries; retrieval metric tests exercise pure evaluation logic. Coverage includes root/health/OpenAPI, document upload/batch/list/delete, synchronous RAG validation and error mapping, SSE headers/events, conversation list/detail/delete, secure configuration defaults/environment injection, and retrieval metrics/matching/evaluator behavior.
 
-**Strategy comparison workflow** (for embedding/chunking/top-k/rerank experiments):
-1. Modify `.env` (embedding_model, chunk_size, reranker_type, etc.)
-2. For embedding/chunking changes: `python scripts/clear_qdrant.py && rm -f data/ingestion_state.db` — full reset
-3. `python ingest.py --input_dir data/engineering --batch_size 64` — re-ingest (skip for rerank-only experiments)
-4. `python evaluation/run_retrieval_eval.py --dataset ... --experiment-name <strategy-name> [--use-reranker --reranker-type ...]` — evaluate
+**Strategy comparison workflow** (for embedding/chunking/top-k experiments):
+1. Modify `.env` (embedding_model, chunk_size, etc.)
+2. `python scripts/clear_qdrant.py && rm -f data/ingestion_state.db` — full reset
+3. `python ingest.py --input_dir data/engineering --batch_size 64` — re-ingest
+4. `python evaluation/run_retrieval_eval.py --dataset ... --experiment-name <strategy-name>` — evaluate
 5. Repeat 1-4 with different configs, then open notebook → Restart & Run All → scroll to §16
-
-**Rerank experiment matrix** (no re-ingestion needed, just vary CLI args):
-```bash
-# Baseline (no rerank)
-python evaluation/run_retrieval_eval.py --dataset ... --top-k 5 --experiment-name baseline-vector-only
-
-# Cross-Encoder with top-20 candidates
-python evaluation/run_retrieval_eval.py --dataset ... --top-k 5 --use-reranker --reranker-type cross_encoder --rerank-top-n 20 --experiment-name rerank-bge-base-top20
-
-# Hybrid fusion (lightweight, no extra model)
-python evaluation/run_retrieval_eval.py --dataset ... --top-k 5 --use-reranker --reranker-type hybrid --rerank-top-n 20 --experiment-name rerank-hybrid-top20
-```
 
 **Infrastructure:**
 - Qdrant runs via Docker Compose, data persisted to `qdrant_storage/`
@@ -133,6 +113,6 @@ python evaluation/run_retrieval_eval.py --dataset ... --top-k 5 --use-reranker -
 
 After every completed coding task (bug fix, feature, refactor), generate a structured dev log file in `logs/`. Name format: `DevLog-YYYY-MM-DD-简短描述.md`. Reference `logs/DevLog-2025-04-30-文档管理API.md` for the exact format — it includes: date, tags, overview, file change list (表格), API design, implementation details, new dependencies, test verification steps, edge cases, and impact analysis. The `.continue/rules/dev-log.md` rule also enforces this.
 
-## CLAUDE.md maintenance
+## AGENTS.md maintenance
 
-After every code change (except log files in `logs/`), update CLAUDE.md to reflect the current project state: new/removed endpoints, new/removed dependencies, changed file responsibilities, new architectural patterns, etc. Keep it accurate and current — stale CLAUDE.md is worse than none.
+After every code change (except log files in `logs/`), update AGENTS.md to reflect the current project state: new/removed endpoints, new/removed dependencies, changed file responsibilities, new architectural patterns, etc. Keep it accurate and current — stale AGENTS.md is worse than none.

@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     # ── 云端 LLM 配置（仅在 llm_provider="cloud" 时使用） ──
     cloud_llm_base_url: str = "https://api.deepseek.com"
     cloud_llm_model: str = "deepseek-v4-flash"
+    # Never provide a real cloud credential as a source-code default.
+    # Set CLOUD_LLM_API_KEY in the ignored local .env file or process environment.
     cloud_llm_api_key: str = ""
 
     # ── Embedding 配置 ──
