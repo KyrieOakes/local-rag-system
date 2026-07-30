@@ -57,6 +57,23 @@ class Settings(BaseSettings):
     reranker_max_chars: int = 1500      # 每个 doc 送入 Cross-Encoder 的最大字符数
     reranker_device: str = "cpu"        # "cpu" | "mps" | "cuda"
 
+    # ── LLM 上下文窗口与会话记忆 ──
+    llm_context_window: int = 32768
+    llm_reserved_output_tokens: int = 2048
+    context_safety_margin_tokens: int = 512
+    # "offline_multilingual" never needs network; a cached tiktoken encoding
+    # (for example "cl100k_base") can be selected for matching providers.
+    context_tokenizer_encoding: str = "offline_multilingual"
+    context_routing_output_tokens: int = 512
+    context_routing_history_max_tokens: int = 4096
+    context_history_max_tokens: int = 8192
+    context_document_min_tokens: int = 4096
+    context_summary_enabled: bool = True
+    context_summary_max_tokens: int = 1024
+    context_summary_input_tokens: int = 6144
+    context_summary_keep_recent_messages: int = 12
+    context_summary_batch_messages: int = 8
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

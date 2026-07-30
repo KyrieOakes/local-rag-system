@@ -27,8 +27,15 @@ import uuid
 
 from app.core.config import settings
 from app.rag.chain import generate_answer, generate_answer_stream
+from app.rag.context_manager import (
+    ContextWindowExceededError,
+    compact_conversation_memory,
+    prepare_generation_context,
+    prepare_routing_memory,
+    resolve_conversation_memory,
+)
 from app.rag.conversation_store import get_conversation_store
-from app.rag.query_processor import process_query
+from app.rag.query_processor import QUERY_PROCESSING_SYSTEM_PROMPT, process_query
 from app.rag.query_logger import log_rag_query
 from app.rag.reranker import get_reranker
 from app.rag.retriever import retrieve_relevant_documents
@@ -48,13 +55,15 @@ def _save_exchange_safe(
     try:
         store = get_conversation_store()
         sources_raw = [s.model_dump() if hasattr(s, "model_dump") else s for s in sources]
-        store.save_exchange(
+        saved = store.save_exchange(
             conversation_id=conversation_id,
             user_message=user_message,
             assistant_message=assistant_message,
             sources=sources_raw,
             routing=routing,
         )
+        if saved:
+            compact_conversation_memory(conversation_id, store=store)
     except Exception:
         logger.exception("Failed to persist conversation %s", conversation_id)
 
@@ -84,11 +93,21 @@ def query_rag(
 ) -> QueryResponse:
     history = history or []
     conversation_id = conversation_id or uuid.uuid4().hex[:12]
+    memory = resolve_conversation_memory(conversation_id, history)
+    routing_memory = prepare_routing_memory(
+        question,
+        memory,
+        QUERY_PROCESSING_SYSTEM_PROMPT,
+    )
 
     # STEP 2 — Query processing + RAG routing gate
     step2_start = time.perf_counter()
     logger.info("[RAG][STEP 2] Query processing + routing 开始")
-    processed = process_query(question, history=history)
+    processed = process_query(
+        question,
+        history=routing_memory.messages,
+        conversation_summary=routing_memory.summary,
+    )
 
     needs_rag = processed["needs_rag"] or force_rag
     routing = "rag" if needs_rag else ("greeting" if processed["intent"] == "chitchat" else "direct")
@@ -159,12 +178,19 @@ def query_rag(
         logger.info("[RAG][STEP 3.5] Rerank 完成，保留 %d 条，耗时 %.3fs", len(retrieved_results), rerank_elapsed)
 
     documents = [document for document, _score in retrieved_results]
+    context_plan = prepare_generation_context(
+        question=question,
+        memory=memory,
+        documents=documents,
+    )
+    retrieved_results = retrieved_results[:context_plan.included_document_count]
 
     # STEP 4+5 — Generate answer
     answer = generate_answer(
         question=question,
-        documents=documents,
-        history=history,
+        documents=context_plan.documents,
+        history=context_plan.history,
+        conversation_summary=context_plan.summary,
     )
 
     # STEP 6 — Assemble response
@@ -219,9 +245,24 @@ async def query_rag_stream(
     """Async generator that yields SSE-formatted events for streaming RAG responses."""
     history = history or []
     conversation_id = conversation_id or uuid.uuid4().hex[:12]
+    try:
+        memory = resolve_conversation_memory(conversation_id, history)
+        routing_memory = prepare_routing_memory(
+            question,
+            memory,
+            QUERY_PROCESSING_SYSTEM_PROMPT,
+        )
+    except ContextWindowExceededError as exc:
+        yield _sse_event("error", {"message": str(exc), "phase": "context"})
+        yield _sse_event("done", {})
+        return
 
     # STEP 2 — Query processing + routing
-    processed = process_query(question, history=history)
+    processed = process_query(
+        question,
+        history=routing_memory.messages,
+        conversation_summary=routing_memory.summary,
+    )
     needs_rag = processed["needs_rag"] or force_rag
     routing = "rag" if needs_rag else ("greeting" if processed["intent"] == "chitchat" else "direct")
 
@@ -288,6 +329,18 @@ async def query_rag_stream(
         logger.info("[RAG][STREAM][STEP 3.5] Rerank 完成，保留 %d 条，耗时 %.3fs", len(retrieved_results), rerank_elapsed)
 
     documents = [document for document, _score in retrieved_results]
+    try:
+        context_plan = prepare_generation_context(
+            question=question,
+            memory=memory,
+            documents=documents,
+        )
+    except ContextWindowExceededError as exc:
+        yield _sse_event("error", {"message": str(exc), "phase": "context"})
+        yield _sse_event("done", {})
+        return
+
+    retrieved_results = retrieved_results[:context_plan.included_document_count]
     sources = _build_sources(retrieved_results)
 
     yield _sse_event("status", {"phase": "generating", "message": "Generating answer..."})
@@ -297,8 +350,9 @@ async def query_rag_stream(
     try:
         async for token in generate_answer_stream(
             question=question,
-            documents=documents,
-            history=history,
+            documents=context_plan.documents,
+            history=context_plan.history,
+            conversation_summary=context_plan.summary,
         ):
             full_answer += token
             yield _sse_event("token", token)

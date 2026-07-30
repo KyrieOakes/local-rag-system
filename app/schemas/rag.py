@@ -14,11 +14,11 @@ from pydantic import BaseModel, Field
 class Message(BaseModel):
     """单条对话消息，用于传递多轮对话历史。"""
     role: str = Field(..., pattern="^(user|assistant)$", description="消息角色")
-    content: str = Field(..., description="消息文本内容")
+    content: str = Field(..., max_length=100_000, description="消息文本内容")
 
 
 class QueryRequest(BaseModel):
-    question: str = Field(..., min_length=1, description="User question")
+    question: str = Field(..., min_length=1, max_length=20_000, description="User question")
     conversation_id: str | None = Field(None, description="Conversation ID (null = new conversation)")
     history: list[Message] = Field(default_factory=list, description="Recent conversation messages for context")
     force_rag: bool = Field(False, description="Force RAG retrieval regardless of routing decision")

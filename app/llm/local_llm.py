@@ -24,6 +24,7 @@ def get_llm() -> ChatOpenAI:
             temperature=0.2,
             timeout=30,
             max_retries=1,
+            max_tokens=settings.llm_reserved_output_tokens,
         )
 
     # 默认: 本地 LLM (LM Studio / Ollama)
@@ -34,4 +35,5 @@ def get_llm() -> ChatOpenAI:
         temperature=0.2,
         timeout=30,
         max_retries=1,
+        max_tokens=settings.llm_reserved_output_tokens,
     )

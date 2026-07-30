@@ -91,18 +91,26 @@ def _check_greeting(question: str) -> dict | None:
     return None
 
 
-def _format_history(history: list) -> str:
-    """Format recent conversation history for prompt injection."""
-    if not history:
-        return ""
+def _format_history(history: list, conversation_summary: str = "") -> str:
+    """Format long-term summary and recent messages for prompt injection."""
+    sections = []
+    if conversation_summary:
+        sections.append(f"Earlier conversation summary:\n{conversation_summary}")
+
     lines = []
     for msg in history:
         role_label = "User" if msg.role == "user" else "Assistant"
         lines.append(f"{role_label}: {msg.content}")
-    return "\n".join(lines)
+    if lines:
+        sections.append("Recent conversation:\n" + "\n".join(lines))
+    return "\n\n".join(sections)
 
 
-def process_query(question: str, history: list | None = None) -> dict:
+def process_query(
+    question: str,
+    history: list | None = None,
+    conversation_summary: str = "",
+) -> dict:
     """
     Process the user query — route, detect intent, rewrite or answer directly.
 
@@ -120,7 +128,7 @@ def process_query(question: str, history: list | None = None) -> dict:
         llm = get_llm()
         chain = _query_processing_prompt | llm | StrOutputParser()
 
-        history_text = _format_history(history)
+        history_text = _format_history(history, conversation_summary)
         if history_text:
             invoke_input = {
                 "question": f"Previous conversation:\n{history_text}\n\nCurrent question: {question}"
@@ -162,10 +170,10 @@ def process_query(question: str, history: list | None = None) -> dict:
         }
 
     except Exception as exc:
-        logger.warning("Query processing failed, falling back to direct answer: %s", exc)
+        logger.warning("Query processing failed; failing open to RAG retrieval: %s", exc)
         return {
-            "needs_rag": False,
+            "needs_rag": True,
             "intent": "unknown",
             "rewritten_query": question,
-            "direct_answer": "Sorry, I encountered an error processing your query. Could you try again?",
+            "direct_answer": None,
         }

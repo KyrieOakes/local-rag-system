@@ -318,16 +318,18 @@ function App() {
       },
     ]);
 
-    // Build recent conversation history (last 10 user+assistant messages)
+    // Send a recent tail only to reconcile the brief async-persistence race.
+    // The backend restores authoritative history by conversation_id and applies
+    // tokenizer-based context budgeting.
     const recentHistory = messages
       .filter((m) => m.role === "user" || m.role === "assistant")
-      .slice(-10)
+      .slice(-20)
       .map(({ role, content }) => ({ role, content }));
 
     try {
       await queryRagStream(
         {
-          question: rawText,
+          question: displayText,
           conversationId,
           history: recentHistory,
           forceRag,

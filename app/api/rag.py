@@ -16,6 +16,7 @@ from fastapi.responses import StreamingResponse
 
 from app.schemas.rag import QueryRequest, QueryResponse
 from app.services.rag_service import query_rag, query_rag_stream
+from app.rag.context_manager import ContextWindowExceededError
 
 
 router = APIRouter(prefix="/rag", tags=["RAG"])
@@ -36,6 +37,8 @@ def rag_query(request: QueryRequest):
             force_rag=request.force_rag,
         )
 
+    except ContextWindowExceededError as error:
+        raise HTTPException(status_code=413, detail=str(error))
     except Exception as error:
         raise HTTPException(status_code=500, detail=f"RAG query failed: {error}")
 

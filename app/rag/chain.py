@@ -14,54 +14,23 @@ from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 
 from app.llm.local_llm import get_llm
+from app.rag.context_manager import (
+    format_documents_for_context,
+    format_memory_for_prompt,
+)
 from app.rag.prompt import rag_prompt
 
 logger = logging.getLogger(__name__)
 
-MAX_HISTORY_TOKENS = 2048
-
-
-def format_documents_for_context(documents: list[Document]) -> str:
-    """Format retrieved documents into a context string with source headers."""
-    formatted_chunks = []
-
-    for index, document in enumerate(documents, start=1):
-        source = document.metadata.get("source", "unknown")
-        page = document.metadata.get("page")
-
-        header = f"[Source {index}] source={source}"
-        if page is not None:
-            header += f", page={page}"
-
-        formatted_chunks.append(f"{header}\n{document.page_content}")
-
-    return "\n\n".join(formatted_chunks)
-
-
-def _format_history(history: list) -> str:
-    """Format conversation history for the RAG prompt, capped at ~2048 tokens."""
-    if not history:
-        return ""
-
-    formatted = []
-    token_estimate = 0
-
-    for msg in reversed(history):
-        role_label = "User" if msg.role == "user" else "Assistant"
-        line = f"{role_label}: {msg.content}"
-        estimated = len(line) // 3  # rough char-to-token heuristic
-        if token_estimate + estimated > MAX_HISTORY_TOKENS:
-            break
-        formatted.insert(0, line)
-        token_estimate += estimated
-
-    return "Previous conversation:\n" + "\n".join(formatted)
-
-
-def _build_chain_input(question: str, documents: list[Document], history: list) -> dict:
+def _build_chain_input(
+    question: str,
+    documents: list[Document],
+    history: list,
+    conversation_summary: str = "",
+) -> dict:
     """Build the input dict for the LangChain RAG chain."""
     context = format_documents_for_context(documents)
-    history_text = _format_history(history)
+    history_text = format_memory_for_prompt(conversation_summary, history)
     return {
         "question": question,
         "context": context,
@@ -69,13 +38,23 @@ def _build_chain_input(question: str, documents: list[Document], history: list) 
     }
 
 
-def generate_answer(question: str, documents: list[Document], history: list | None = None) -> str:
+def generate_answer(
+    question: str,
+    documents: list[Document],
+    history: list | None = None,
+    conversation_summary: str = "",
+) -> str:
     history = history or []
     llm = get_llm()
 
     step4_start = time.perf_counter()
     logger.info("[RAG][STEP 4] prompt 构建开始")
-    chain_input = _build_chain_input(question, documents, history)
+    chain_input = _build_chain_input(
+        question,
+        documents,
+        history,
+        conversation_summary,
+    )
 
     chain = rag_prompt | llm | StrOutputParser()
     logger.info("[RAG][STEP 4] prompt 构建完成，耗时 %.3fs", time.perf_counter() - step4_start)
@@ -88,13 +67,23 @@ def generate_answer(question: str, documents: list[Document], history: list | No
     return answer
 
 
-async def generate_answer_stream(question: str, documents: list[Document], history: list | None = None):
+async def generate_answer_stream(
+    question: str,
+    documents: list[Document],
+    history: list | None = None,
+    conversation_summary: str = "",
+):
     """Async generator that yields answer tokens one at a time via SSE."""
     history = history or []
     llm = get_llm()
 
     logger.info("[RAG][STEP 4] prompt 构建开始 (streaming)")
-    chain_input = _build_chain_input(question, documents, history)
+    chain_input = _build_chain_input(
+        question,
+        documents,
+        history,
+        conversation_summary,
+    )
 
     chain = rag_prompt | llm | StrOutputParser()
     logger.info("[RAG][STEP 4] prompt 构建完成 (streaming)")

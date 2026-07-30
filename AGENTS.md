@@ -52,17 +52,19 @@ python -m unittest discover tests/
 
 - `app/main.py` — App factory, CORS middleware (allows `:5173`), route registration
 - `app/api/` — Route handlers: `health.py` (`GET /health`), `documents.py` (`POST /upload`, `POST /upload-batch`, `GET /`, `DELETE /{source}`), `rag.py` (`POST /rag/query` + `POST /rag/query/stream` SSE streaming), `conversations.py` (`GET /conversations`, `GET /conversations/{id}`, `DELETE /conversations/{id}`)
-- `app/services/` — Business logic orchestration. `ingestion_service.py` delegates to the unified `ingest_file_paths` pipeline; `rag_service.py` orchestrates the full RAG pipeline with RAG routing gate, conversation context, async logging, and SSE streaming (`query_rag` + `query_rag_stream`); `document_service.py` handles list/delete by querying Qdrant directly
+- `app/services/` — Business logic orchestration. `ingestion_service.py` delegates to the unified `ingest_file_paths` pipeline; `rag_service.py` orchestrates server-side memory restoration, context budgeting, RAG routing, retrieval/rerank, async persistence/compaction, logging, and SSE streaming (`query_rag` + `query_rag_stream`); `document_service.py` handles list/delete by querying Qdrant directly
 - `ingest.py` — Standalone CLI script at repo root. `python ingest.py --input_dir <dir> --batch_size <n> [--collection_name <name>]`
 - `app/rag/` — The RAG pipeline primitives:
   - `loader.py` — Loads PDF (PyPDF), TXT/MD (TextLoader), DOCX (Docx2txtLoader) via LangChain document loaders
   - `splitter.py` — MarkdownHeaderTextSplitter (preserves H1/H2/H3 hierarchy) for .md/.markdown; RecursiveCharacterTextSplitter for all other types
   - `embeddings.py` — `CachedOpenAIEmbeddings` with thread-safe LRU cache (256 entries, MD5-keyed) for repeated query embeddings. Wraps OpenAIEmbeddings pointed at local/cloud embedding server.
   - `query_processor.py` — Two-layer RAG routing gate: **Layer 0** keyword pre-filter (regex-based, catches greetings/thanks/goodbyes/meta-questions with zero LLM cost); **Layer 1** unified LLM call that simultaneously decides `needs_rag`, detects intent, and either rewrites the query for retrieval or generates a direct answer. Accepts conversation history for pronoun resolution.
+  - `context_manager.py` — Central server-side context authority. Restores persisted memory by `conversation_id`, reconciles the client tail, maintains rolling summaries, budgets routing/final prompts across question/history/documents/output/safety margin, truncates deterministically, and raises `ContextWindowExceededError` for unfit requests. Uses the offline multilingual counter by default and optional cached tiktoken encodings.
+  - `conversation_store.py` — SQLite/WAL conversation persistence. Keeps all original messages for UI/audit plus `summary` and `summary_through_message_id` for model-facing rolling memory; performs backward-compatible schema migration.
   - `vectorstore.py` — QdrantVectorStore singleton; also contains `list_all_documents()` and `delete_document_by_source()`
   - `retriever.py` — `similarity_search_with_score` against the vectorstore
-  - `chain.py` — Builds a LangChain chain: `rag_prompt | llm | StrOutputParser`. `generate_answer()` for sync; `generate_answer_stream()` async generator for SSE token streaming. Formats conversation history with ~2048 token budget.
-  - `prompt.py` — System prompt template with `{history}` and `{context}` placeholders; instructs LLM to write natural flowing prose grounded in context + conversation
+  - `chain.py` — Builds a LangChain chain: `rag_prompt | llm | StrOutputParser`. `generate_answer()` for sync; `generate_answer_stream()` async generator for SSE token streaming. Consumes history/documents already budgeted by `context_manager`.
+  - `prompt.py` — System prompt template with `{history}` and `{context}` placeholders; receives the rolling summary/recent-history rendering and budgeted retrieval context, and instructs the LLM to answer in natural prose grounded in that context
   - `query_logger.py` — Writes full query trace to `logs/history/rag_queries.jsonl` + brief terminal summary. Called from background thread (non-blocking).
   - `ingestion/` — Unified batch-ingestion pipeline:
     - `checksum_store.py` — SQLite-based MD5 checksum database for incremental updates
@@ -70,13 +72,13 @@ python -m unittest discover tests/
     - `bulk_writer.py` — Bulk Qdrant `upsert` + auto-create collection if missing (infers vector_size from first embedding) + delete by `metadata.file_path`
     - `ingest_pipeline.py` — Orchestration: scan → checksum classify → load → split → batch embed → bulk upsert
 - `app/llm/local_llm.py` — `get_llm()` returns a `ChatOpenAI` instance. `"local"` → local LM Studio/Ollama config; `"cloud"` → cloud API config.
-- `app/core/config.py` — `Settings` class loaded from `.env` via pydantic-settings
+- `app/core/config.py` — `Settings` class loaded from `.env` via pydantic-settings, including the model context window, output reservation, safety margin, routing/history/document budgets, tokenizer strategy, and summary compaction thresholds
 - `app/schemas/` — Pydantic models: `Message` (role+content for conversation history), `QueryRequest` (question, conversation_id, history, force_rag), `QueryResponse` (question, answer, sources, conversation_id, routing), `SourceChunk`
 - `app/utils/file_utils.py` — Validates file extension (`.pdf`, `.txt`, `.md`, `.markdown`, `.docx`), saves to `data/raw/` with UUID filenames
 
 **Frontend** (`frontend/`) — React 19 + Vite, single-page chat UI with "Editorial Ink" dark theme:
 
-- `src/App.jsx` — Entire application in one component (sidebar, chat messages, upload modal, document manager modal). Manages `conversationId` state for multi-turn conversations; builds recent history (last 10 messages) for each request; handles `@rag` prefix to force retrieval mode; renders SSE-streamed tokens in real-time; shows routing badge ("Searched documents" / "Direct response" / "Quick reply") on each assistant message. No router — all UI state managed via `useState`.
+- `src/App.jsx` — Entire application in one component (sidebar, chat messages, upload modal, document manager modal). Manages `conversationId`; sends a 20-message client tail only to reconcile async persistence while the server owns authoritative memory and token budgeting; handles `@rag` without leaking the prefix into the model question; renders SSE-streamed tokens and routing badges. No router — all UI state managed via `useState`.
 - `src/App.css` — Complete design system with CSS custom properties (design tokens for colors, shadows, radii, transitions). Smoked-glass panels, refined typography, subtle ambient light bleeds. Includes `.routing-badge` styles for rag/direct/greeting indicators.
 - `src/index.css` — Base reset, grain texture overlay, imports Plus Jakarta Sans (Google Fonts) with weight range 300–800.
 - `src/api.js` — Axios instance pointing at `http://127.0.0.1:8000`, exports `healthCheck`, `uploadDocument`, `uploadDocuments`, `queryRag` (with conversationId/history/forceRag params), `queryRagStream` (fetch-based SSE reader with event callbacks), `listDocuments`, `deleteDocument`
@@ -95,7 +97,7 @@ python -m unittest discover tests/
 - `datasets/golden_retrieval.example.jsonl` — 22 annotated question→relevant_sources examples covering 8 topic areas
 - Visualization dependencies: `matplotlib`, `seaborn`, `pandas`, `jupyter`, `nbconvert`
 
-**Tests** (`tests/`) — `unittest` suite with 56 offline tests. FastAPI endpoint tests use `TestClient` and mock Qdrant/LLM/storage boundaries; retrieval metric tests exercise pure evaluation logic. Coverage includes root/health/OpenAPI, document upload/batch/list/delete, synchronous RAG validation and error mapping, SSE headers/events, conversation list/detail/delete, secure configuration defaults/environment injection, and retrieval metrics/matching/evaluator behavior.
+**Tests** (`tests/`) — `unittest` suite with 65 offline tests. FastAPI endpoint tests use `TestClient` and mock Qdrant/LLM/storage boundaries; context tests cover server/client history reconciliation, token budgeting, deterministic truncation, rolling-summary compaction, legacy SQLite migration, summary cursors, and HTTP 413 mapping; retrieval metric tests exercise pure evaluation logic. Coverage also includes root/health/OpenAPI, document upload/batch/list/delete, SSE headers/events, conversation CRUD, secure configuration, and retrieval metrics/matching/evaluator behavior.
 
 **Strategy comparison workflow** (for embedding/chunking/top-k experiments):
 1. Modify `.env` (embedding_model, chunk_size, etc.)
@@ -107,6 +109,8 @@ python -m unittest discover tests/
 **Infrastructure:**
 - Qdrant runs via Docker Compose, data persisted to `qdrant_storage/`
 - All LLM/embedding calls use the OpenAI-compatible API format (works with LM Studio, Ollama, or cloud providers)
+- Model-facing conversation context is restored on the server. Full original messages remain in `data/conversations.db`; older model memory is compacted into a rolling summary while recent messages remain verbatim.
+- Set `LLM_CONTEXT_WINDOW` to the active model/server limit. The budget reserves output and a safety margin before allocating history and retrieved documents.
 - Uploaded files stored in `data/raw/`, referenced by UUID filename; the original name goes into Qdrant point metadata
 
 ## Dev log habit
@@ -116,3 +120,15 @@ After every completed coding task (bug fix, feature, refactor), generate a struc
 ## AGENTS.md maintenance
 
 After every code change (except log files in `logs/`), update AGENTS.md to reflect the current project state: new/removed endpoints, new/removed dependencies, changed file responsibilities, new architectural patterns, etc. Keep it accurate and current — stale AGENTS.md is worse than none.
+
+## 校招准备文档维护
+
+`校招准备.md` is the user's on-demand campus-recruiting interview study guide for this project. Do **not** update it after routine code changes or as part of the normal AGENTS.md/dev-log maintenance flow.
+
+Only update or rebuild `校招准备.md` when the user explicitly asks to update, refresh, rewrite, or regenerate the “校招准备” file. When triggered:
+
+1. Read all `logs/DevLog-*.md` files and `logs/项目说明与进度.md` to reconstruct the project iteration history.
+2. Inspect the current code and configuration so superseded historical implementations are clearly distinguished from current behavior.
+3. Keep the guide detailed, beginner-friendly, interview-oriented, and easy to memorize.
+4. Cover the project purpose, architecture, end-to-end data flows, module responsibilities, iteration timeline, design decisions, tradeoffs, failures/fallbacks, evaluation metrics/results, known limitations, improvement roadmap, high-frequency interview questions, concise oral versions, and revision checklists.
+5. Be explicit about discrepancies between historical DevLogs and current code, and never present aspirational or outdated behavior as already implemented.

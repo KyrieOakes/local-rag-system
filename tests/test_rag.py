@@ -6,6 +6,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.rag.context_manager import ContextWindowExceededError
 from app.schemas.rag import QueryResponse, SourceChunk
 
 
@@ -96,6 +97,15 @@ class RagApiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 500)
         self.assertIn("RAG query failed", response.json()["detail"])
+
+    @patch("app.api.rag.query_rag")
+    def test_query_maps_context_overflow_to_413(self, query_rag_mock):
+        query_rag_mock.side_effect = ContextWindowExceededError("question too large")
+
+        response = self.client.post("/rag/query", json={"question": "test"})
+
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(response.json()["detail"], "question too large")
 
     @patch("app.api.rag.query_rag_stream")
     def test_stream_returns_sse_events(self, query_rag_stream_mock):

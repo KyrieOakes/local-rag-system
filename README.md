@@ -22,7 +22,8 @@
 - **🎯 Rerank 精排** — 可选 Cross-Encoder / Hybrid Fusion 重排序，提升检索精度
 - **⚡ 批量 Embedding** — 一次 API 调用处理最多 64 条文本，比逐条调用快数倍
 - **♻️ 增量更新** — SQLite checksum 数据库，文件未改则跳过，改过的文件自动删旧换新
-- **💬 多轮对话 + 历史持久化** — conversation_id + history 注入，代词消解；SQLite 自动保存对话，侧边栏历史列表，刷新不丢失
+- **🧠 服务端长期记忆** — `conversation_id` 自动恢复 SQLite 历史，滚动摘要保留早期决策，近期消息保留原文；客户端尾部仅用于异步落库竞态对账
+- **📐 统一上下文预算** — 路由与生成共享 token 预算策略，统一计算系统提示、问题、历史、检索文档、安全余量和预留输出，超限时确定性裁剪或返回 413
 - **📋 查询日志** — 每次问答完整记录到 `logs/history/rag_queries.jsonl`，方便评估和调试
 - **🎨 Editorial Ink 主题** — 深色设计系统，Plus Jakarta Sans 字体，烟熏玻璃面板
 - **🔌 本地/云端双模式** — LLM 和 Embedding 均支持 LM Studio / Ollama / DeepSeek 等 OpenAI 兼容 API
@@ -47,7 +48,8 @@ FastAPI (:8000)
     ▼
 RAG Pipeline
     摄入: loader → splitter → batch_embedder → bulk_writer → Qdrant
-    问答: query_processor(routing gate) → retriever → reranker(可选) → prompt → LLM → SSE tokens
+    问答: context_manager → query_processor → retriever → reranker(可选) → prompt → LLM → SSE
+    记忆: conversation_store(SQLite 原文 + rolling summary) → token-budgeted context
     日志: query_logger → terminal + logs/history/rag_queries.jsonl
     │
     ▼
@@ -83,6 +85,18 @@ docker compose up -d
 cp .env.example .env
 # 按需编辑 .env：LLM_BASE_URL、EMBEDDING_MODEL 等
 ```
+
+上下文窗口需要与当前模型服务保持一致，核心配置如下：
+
+```dotenv
+LLM_CONTEXT_WINDOW=32768
+LLM_RESERVED_OUTPUT_TOKENS=2048
+CONTEXT_SAFETY_MARGIN_TOKENS=512
+CONTEXT_HISTORY_MAX_TOKENS=8192
+CONTEXT_SUMMARY_ENABLED=true
+```
+
+默认 `CONTEXT_TOKENIZER_ENCODING=offline_multilingual` 可完全离线运行，并对中文做保守计数；如果目标供应商对应的 tiktoken 编码已缓存在本地，可改为 `cl100k_base` 等编码。
 
 ### 4. 启动后端
 
@@ -189,6 +203,7 @@ local-rag-system/
 │   │   ├── retriever.py              向量检索
 │   │   ├── reranker.py               Rerank 精排 (Cross-Encoder/Hybrid)
 │   │   ├── conversation_store.py     对话持久化 (SQLite)
+│   │   ├── context_manager.py        服务端记忆恢复/摘要/统一 token 预算
 │   │   ├── prompt.py                 System Prompt
 │   │   ├── chain.py                  答案生成链 (同步 + 流式)
 │   │   └── ingestion/                批量摄入 pipeline
@@ -226,6 +241,7 @@ local-rag-system/
 | Rerank | sentence-transformers (BAAI/bge-reranker-base / Hybrid Fusion) |
 | 文本处理 | PyPDF + Docx2txtLoader + MarkdownHeaderTextSplitter |
 | 流式传输 | SSE (Server-Sent Events) via FastAPI StreamingResponse + LangChain astream |
+| 上下文管理 | SQLite rolling summary + recent-message window + configurable token budget |
 | 前端 | React 19 + Vite + react-markdown + Axios |
 | 摄入 | `ingest.py` CLI + `app/rag/ingestion/` 模块 |
 

@@ -31,6 +31,8 @@ SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS conversations (
     id          TEXT PRIMARY KEY,
     title       TEXT NOT NULL DEFAULT '',
+    summary     TEXT NOT NULL DEFAULT '',
+    summary_through_message_id INTEGER NOT NULL DEFAULT 0,
     created_at  REAL NOT NULL,
     updated_at  REAL NOT NULL
 );
@@ -74,6 +76,20 @@ class ConversationStore:
                 conn.execute("PRAGMA journal_mode=WAL")
                 conn.execute("PRAGMA foreign_keys=ON")
                 conn.executescript(SCHEMA_SQL)
+                columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(conversations)").fetchall()
+                }
+                if "summary" not in columns:
+                    conn.execute(
+                        "ALTER TABLE conversations "
+                        "ADD COLUMN summary TEXT NOT NULL DEFAULT ''"
+                    )
+                if "summary_through_message_id" not in columns:
+                    conn.execute(
+                        "ALTER TABLE conversations "
+                        "ADD COLUMN summary_through_message_id INTEGER NOT NULL DEFAULT 0"
+                    )
                 conn.commit()
                 self._initialized = True
             finally:
@@ -161,6 +177,66 @@ class ConversationStore:
             return False
 
     # ── message helpers ─────────────────────────────────────────────
+
+    def get_context_state(self, conversation_id: str) -> dict | None:
+        """Return rolling summary and only messages not covered by that summary."""
+        if not self._initialized:
+            return None
+        with self._get_conn() as conn:
+            conversation = conn.execute(
+                """
+                SELECT summary, summary_through_message_id
+                FROM conversations
+                WHERE id = ?
+                """,
+                (conversation_id,),
+            ).fetchone()
+            if not conversation:
+                return None
+
+            messages = conn.execute(
+                """
+                SELECT id, role, content
+                FROM messages
+                WHERE conversation_id = ? AND id > ?
+                ORDER BY id ASC
+                """,
+                (
+                    conversation_id,
+                    conversation["summary_through_message_id"],
+                ),
+            ).fetchall()
+            return {
+                "summary": conversation["summary"],
+                "summary_through_message_id": conversation[
+                    "summary_through_message_id"
+                ],
+                "messages": [dict(message) for message in messages],
+            }
+
+    def update_context_summary(
+        self,
+        conversation_id: str,
+        summary: str,
+        through_message_id: int,
+    ) -> bool:
+        """Atomically advance the rolling-summary cursor, rejecting stale writers."""
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE conversations
+                SET summary = ?, summary_through_message_id = ?
+                WHERE id = ? AND summary_through_message_id < ?
+                """,
+                (
+                    summary,
+                    through_message_id,
+                    conversation_id,
+                    through_message_id,
+                ),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
 
     def save_exchange(
         self,
