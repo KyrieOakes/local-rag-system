@@ -2,7 +2,7 @@
  * 全局基础样式重置和视觉效果。
  *
  * 职责：
- * - 导入 Plus Jakarta Sans 字体（Google Fonts，字重 300–800）
+ * - 使用本地系统字体栈，完全离线时不依赖远程字体服务
  * - 全局盒模型重置（border-box）
  * - 全屏布局（html/body/#root 占满视口）
  * - 暗色背景（#08080c）和浅色文字（#edecf0）
@@ -10,8 +10,6 @@
  *   12 秒步进动画，透明度 0.025）
  * - 字体抗锯齿优化
  */
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
-
 * {
   margin: 0;
   padding: 0;
@@ -30,7 +28,7 @@ body,
 }
 
 body {
-  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: 'Plus Jakarta Sans', Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   background: #08080c;
   color: #edecf0;
   -webkit-font-smoothing: antialiased;

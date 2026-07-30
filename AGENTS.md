@@ -1,134 +1,155 @@
 # AGENTS.md
 
-This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+This file provides guidance to Codex when working in this repository.
 
 ## Development commands
 
-Conda environment: `localrag` at `/Users/chris/miniconda3/envs/localrag`. Always activate it before running Python commands:
+Conda environment: `localrag` at `/Users/chris/miniconda3/envs/localrag`. Always activate it before Python commands:
 
 ```bash
 conda activate localrag
 ```
 
 ```bash
-# Backend (from repo root, with conda env activated)
+# Backend
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
-# Batch ingest local directories
+# Qdrant only
+docker compose up -d
+
+# Qdrant + backend + frontend
+docker compose --profile full up --build -d
+
+# Directory ingestion
 python ingest.py --input_dir data/engineering --batch_size 64
 python ingest.py --input_dir data/engineering --batch_size 32 --collection_name my_collection
 
-# Qdrant vector database
-docker compose up -d
+# Evaluation
+pip install -r requirements-eval.txt
+python evaluation/run_retrieval_eval.py \
+  --dataset evaluation/datasets/golden_retrieval.example.jsonl \
+  --top-k 5 \
+  --experiment-name my-experiment
+jupyter notebook evaluation/retrieval_eval_pipeline.ipynb
 
-# Frontend (from frontend/)
-cd frontend && npm run dev       # Vite dev server on :5173
-cd frontend && npm run build     # production build
-cd frontend && npm run lint      # ESLint
+# Backend verification
+python -m compileall app evaluation
+python -m unittest discover tests/
 
-# Python dependencies (if adding new ones)
-pip install -r requirements.txt
+# Frontend
+cd frontend && npm ci
+cd frontend && npm run dev
+cd frontend && npm run lint
+cd frontend && npm run build
+
+# Repository checks
+docker compose config
+git diff --check
 ```
 
-Copy `.env.example` to `.env` before starting. The backend reads configuration from `.env` via pydantic-settings — `.env` values override defaults in `app/core/config.py`. All modules import the global `settings` singleton.
+Copy `.env.example` to `.env` before starting. Configuration is loaded by pydantic-settings; `.env` overrides `app/core/config.py`. Frontend variables are documented in `frontend/.env.example`.
 
-Never commit real API keys, tokens, passwords, or other credentials. Cloud secrets must come only from the ignored `.env` file or process environment; source defaults and `.env.example` values must be blank/safe placeholders. If a secret is committed, revoke it and rewrite Git history rather than only deleting it in a later commit.
+Never commit real API keys, tokens, passwords, or other credentials. Cloud secrets must come only from the ignored `.env` file or process environment. Source defaults and example files must remain safe. If a secret was committed, revoke it and rewrite Git history; deleting it in a later commit is insufficient.
+
+### Reindex rules
+
+The ingestion pipeline fingerprint includes collection, embedding endpoint/model/revision, chunk size/overlap, and splitter version.
+
+- Content or fingerprint change triggers versioned reingestion automatically.
+- A different embedding dimension cannot share an existing collection; use a new collection or clear the old one first.
+- If only Qdrant was manually cleared while content and fingerprint stayed identical, also remove `data/ingestion_state.db`, otherwise the authoritative registry correctly reports the version as current.
 
 ```bash
-# Reset vector DB + checksum store (required when changing embedding/chunking config)
-python scripts/clear_qdrant.py && rm -f data/ingestion_state.db
-
-# Evaluation (offline retrieval quality assessment)
-python evaluation/run_retrieval_eval.py --dataset evaluation/datasets/golden_retrieval.example.jsonl --top-k 5 --experiment-name my-experiment
-jupyter notebook evaluation/retrieval_eval_pipeline.ipynb   # full pipeline + strategy comparison
-
-# Unit tests
-python -m unittest discover tests/
+python scripts/clear_qdrant.py
+rm -f data/ingestion_state.db
 ```
 
 ## Architecture
 
-**Backend** (`app/`) — FastAPI application with four route modules and a layered RAG pipeline:
+### Backend
 
-- `app/main.py` — App factory, CORS middleware (allows `:5173`), route registration
-- `app/api/` — Route handlers: `health.py` (`GET /health`), `documents.py` (`POST /upload`, `POST /upload-batch`, `GET /`, `DELETE /{source}`), `rag.py` (`POST /rag/query` + `POST /rag/query/stream` SSE streaming), `conversations.py` (`GET /conversations`, `GET /conversations/{id}`, `DELETE /conversations/{id}`)
-- `app/services/` — Business logic orchestration. `ingestion_service.py` delegates to the unified `ingest_file_paths` pipeline; `rag_service.py` orchestrates server-side memory restoration, context budgeting, RAG routing, retrieval/rerank, async persistence/compaction, logging, and SSE streaming (`query_rag` + `query_rag_stream`); `document_service.py` handles list/delete by querying Qdrant directly
-- `ingest.py` — Standalone CLI script at repo root. `python ingest.py --input_dir <dir> --batch_size <n> [--collection_name <name>]`
-- `app/rag/` — The RAG pipeline primitives:
-  - `loader.py` — Loads PDF (PyPDF), TXT/MD (TextLoader), DOCX (Docx2txtLoader) via LangChain document loaders
-  - `splitter.py` — MarkdownHeaderTextSplitter (preserves H1/H2/H3 hierarchy) for .md/.markdown; RecursiveCharacterTextSplitter for all other types
-  - `embeddings.py` — `CachedOpenAIEmbeddings` with thread-safe LRU cache (256 entries, MD5-keyed) for repeated query embeddings. Wraps OpenAIEmbeddings pointed at local/cloud embedding server.
-  - `query_processor.py` — Two-layer RAG routing gate: **Layer 0** keyword pre-filter (regex-based, catches greetings/thanks/goodbyes/meta-questions with zero LLM cost); **Layer 1** unified LLM call that simultaneously decides `needs_rag`, detects intent, and either rewrites the query for retrieval or generates a direct answer. Accepts conversation history for pronoun resolution.
-  - `context_manager.py` — Central server-side context authority. Restores persisted memory by `conversation_id`, reconciles the client tail, maintains rolling summaries, budgets routing/final prompts across question/history/documents/output/safety margin, truncates deterministically, and raises `ContextWindowExceededError` for unfit requests. Uses the offline multilingual counter by default and optional cached tiktoken encodings.
-  - `conversation_store.py` — SQLite/WAL conversation persistence. Keeps all original messages for UI/audit plus `summary` and `summary_through_message_id` for model-facing rolling memory; performs backward-compatible schema migration.
-  - `vectorstore.py` — QdrantVectorStore singleton; also contains `list_all_documents()` and `delete_document_by_source()`
-  - `retriever.py` — `similarity_search_with_score` against the vectorstore
-  - `chain.py` — Builds a LangChain chain: `rag_prompt | llm | StrOutputParser`. `generate_answer()` for sync; `generate_answer_stream()` async generator for SSE token streaming. Consumes history/documents already budgeted by `context_manager`.
-  - `prompt.py` — System prompt template with `{history}` and `{context}` placeholders; receives the rolling summary/recent-history rendering and budgeted retrieval context, and instructs the LLM to answer in natural prose grounded in that context
-  - `query_logger.py` — Writes full query trace to `logs/history/rag_queries.jsonl` + brief terminal summary. Called from background thread (non-blocking).
-  - `ingestion/` — Unified batch-ingestion pipeline:
-    - `checksum_store.py` — SQLite-based MD5 checksum database for incremental updates
-    - `batch_embedder.py` — Batch embedding via OpenAI-compatible `/v1/embeddings` (configurable batch_size)
-    - `bulk_writer.py` — Bulk Qdrant `upsert` + auto-create collection if missing (infers vector_size from first embedding) + delete by `metadata.file_path`
-    - `ingest_pipeline.py` — Orchestration: scan → checksum classify → load → split → batch embed → bulk upsert
-- `app/llm/local_llm.py` — `get_llm()` returns a `ChatOpenAI` instance. `"local"` → local LM Studio/Ollama config; `"cloud"` → cloud API config.
-- `app/core/config.py` — `Settings` class loaded from `.env` via pydantic-settings, including the model context window, output reservation, safety margin, routing/history/document budgets, tokenizer strategy, and summary compaction thresholds
-- `app/schemas/` — Pydantic models: `Message` (role+content for conversation history), `QueryRequest` (question, conversation_id, history, force_rag), `QueryResponse` (question, answer, sources, conversation_id, routing), `SourceChunk`
-- `app/utils/file_utils.py` — Validates file extension (`.pdf`, `.txt`, `.md`, `.markdown`, `.docx`), saves to `data/raw/` with UUID filenames
+- `app/main.py` — FastAPI app, configurable CORS, request IDs, optional `X-API-Key`, route registration.
+- `app/api/health.py` — `GET /health` liveness and `GET /health/ready` dependency readiness.
+- `app/api/documents.py` — streamed single/batch uploads, list, delete-by-ID/source compatibility, safe error mapping.
+- `app/api/rag.py` — synchronous JSON query and SSE stream; `TOP_K` comes from settings.
+- `app/api/conversations.py` — list/detail/delete conversation APIs with generic 500 responses.
+- `app/services/rag_service.py` — full orchestration: server memory, routing, retrieval, optional rerank, context planning, sync/stream generation, completed-answer side effects.
+- `app/services/ingestion_service.py` — upload adapter for the unified ingestion pipeline; returns stable identity/status without exposing the server storage path.
+- `app/services/document_service.py` — stable-ID document lifecycle; ambiguous source deletion returns 409.
 
-**Frontend** (`frontend/`) — React 19 + Vite, single-page chat UI with "Editorial Ink" dark theme:
+### RAG primitives
 
-- `src/App.jsx` — Entire application in one component (sidebar, chat messages, upload modal, document manager modal). Manages `conversationId`; sends a 20-message client tail only to reconcile async persistence while the server owns authoritative memory and token budgeting; handles `@rag` without leaking the prefix into the model question; renders SSE-streamed tokens and routing badges. No router — all UI state managed via `useState`.
-- `src/App.css` — Complete design system with CSS custom properties (design tokens for colors, shadows, radii, transitions). Smoked-glass panels, refined typography, subtle ambient light bleeds. Includes `.routing-badge` styles for rag/direct/greeting indicators.
-- `src/index.css` — Base reset, grain texture overlay, imports Plus Jakarta Sans (Google Fonts) with weight range 300–800.
-- `src/api.js` — Axios instance pointing at `http://127.0.0.1:8000`, exports `healthCheck`, `uploadDocument`, `uploadDocuments`, `queryRag` (with conversationId/history/forceRag params), `queryRagStream` (fetch-based SSE reader with event callbacks), `listDocuments`, `deleteDocument`
-- Frontend dependencies include `react-markdown` for rendering LLM Markdown responses
+- `app/rag/loader.py` — PDF, TXT/MD/Markdown, DOCX loaders.
+- `app/rag/splitter.py` — Markdown H1/H2/H3-aware split followed by recursive character splitting; recursive splitting for other formats.
+- `app/rag/embeddings.py` — cached `OpenAIEmbeddings`; true thread-safe 256-entry LRU keyed by endpoint/model/revision/text SHA-256; client reuse.
+- `app/rag/query_processor.py` — Layer 0 regex quick replies; Layer 1 JSON route/intent/rewrite/direct answer with legacy parser; malformed output and exceptions fail open to RAG.
+- `app/rag/context_manager.py` — authoritative server memory, client-tail reconciliation, rolling summaries, deterministic token budgeting and truncation.
+- `app/rag/conversation_store.py` — SQLite WAL store; full messages plus summary cursor; schema migration, busy timeout, striped locks and `turn_id` idempotency. Read/delete failures propagate so APIs can distinguish storage errors from empty/404 results.
+- `app/rag/vectorstore.py` / `retriever.py` — cached Qdrant wrapper and `similarity_search_with_score`.
+- `app/rag/reranker.py` — explicit `RerankCandidate(document, vector_score)` contract; NoOp, Cross-Encoder and Hybrid Fusion; safe vector fallback.
+- `app/rag/prompt.py` / `chain.py` — untrusted-memory/context boundaries and LCEL sync/async generation.
+- `app/rag/query_logger.py` — thread-safe JSONL query traces with conversation/turn/routing/stage timings.
+- `app/core/background_tasks.py` — bounded fixed worker executor, queue backpressure and graceful shutdown.
 
-**Evaluation** (`evaluation/`) — Offline retrieval quality assessment:
+### Ingestion
 
-- `run_retrieval_eval.py` — CLI runner: loads golden JSONL dataset, calls production retriever, outputs `retrieval-eval-v1` JSON report with `settings_snapshot` (chunk_size, embedding_model, etc.)
-- `retrieval_eval_pipeline.ipynb` — Jupyter notebook: full test pipeline with 16 visualization charts across two sections:
-  - Sections 1–15: Single-experiment pipeline (per-question bar charts, aggregate dashboard, radar chart, top-K sensitivity, correlation heatmap, recall-vs-precision scatter, auto-diagnosis)
-  - Section 16: **Multi-experiment strategy comparison** (comparison table with config metadata, core metrics bar chart, context quality chart, radar overlay, recall-vs-precision trade-off, per-question sensitivity heatmap). Auto-loads all reports from `evaluation/results/` and displays `chunk_size`/`embedding_model` from each report's `settings_snapshot`.
-  - Supports live mode (real Qdrant + embedding) and demo mode (synthetic data for offline visualization testing)
-- `retrieval_metrics/metrics.py` — Core retrieval metrics: Recall@K, Precision@K, MRR, NDCG@K, context_redundancy@K
-- `retrieval_metrics/matching.py` — Maps golden source/snippet labels to concrete chunk IDs (file_path, source, text-snippet matching)
-- `retrieval_metrics/evaluator.py` — Unified `evaluate_retrieval_case()` producing grouped `core_metrics` + `context_quality`
-- `datasets/golden_retrieval.example.jsonl` — 22 annotated question→relevant_sources examples covering 8 topic areas
-- Visualization dependencies: `matplotlib`, `seaborn`, `pandas`, `jupyter`, `nbconvert`
+- `app/rag/ingestion/checksum_store.py` — authoritative SQLite `document_registry`, atomic version activation, durable predecessor-cleanup queue, stable collection-scoped IDs and legacy migration.
+- `app/rag/ingestion/batch_embedder.py` — OpenAI-compatible batch embeddings.
+- `app/rag/ingestion/bulk_writer.py` — metadata/count/dimension validation, deterministic versioned point IDs, synchronous batched upsert, exact version/ID deletes, document listing.
+- `app/rag/ingestion/ingest_pipeline.py` — scan → identity/version → load/split → embed → new Qdrant version → atomic registry activation/cleanup enqueue → idempotent predecessor cleanup; exact rollback, pending-cleanup retry, legacy upload adoption and safe removed-file reconciliation.
+- `app/utils/file_utils.py` — streamed bounded uploads, UUID storage, extension/content validation, deletion restricted to `data/raw`.
 
-**Tests** (`tests/`) — `unittest` suite with 65 offline tests. FastAPI endpoint tests use `TestClient` and mock Qdrant/LLM/storage boundaries; context tests cover server/client history reconciliation, token budgeting, deterministic truncation, rolling-summary compaction, legacy SQLite migration, summary cursors, and HTTP 413 mapping; retrieval metric tests exercise pure evaluation logic. Coverage also includes root/health/OpenAPI, document upload/batch/list/delete, SSE headers/events, conversation CRUD, secure configuration, and retrieval metrics/matching/evaluator behavior.
+Upload identity is the normalized original filename, so reuploading the same name replaces that logical upload. Directory identity is the canonical path. Qdrant and SQLite do not share a transaction; the code writes the new Qdrant version first, atomically activates it with a durable SQLite cleanup record, then retries predecessor cleanup. This is a local saga, not distributed ACID.
 
-**Strategy comparison workflow** (for embedding/chunking/top-k experiments):
-1. Modify `.env` (embedding_model, chunk_size, etc.)
-2. `python scripts/clear_qdrant.py && rm -f data/ingestion_state.db` — full reset
-3. `python ingest.py --input_dir data/engineering --batch_size 64` — re-ingest
-4. `python evaluation/run_retrieval_eval.py --dataset ... --experiment-name <strategy-name>` — evaluate
-5. Repeat 1-4 with different configs, then open notebook → Restart & Run All → scroll to §16
+### Frontend
 
-**Infrastructure:**
-- Qdrant runs via Docker Compose, data persisted to `qdrant_storage/`
-- All LLM/embedding calls use the OpenAI-compatible API format (works with LM Studio, Ollama, or cloud providers)
-- Model-facing conversation context is restored on the server. Full original messages remain in `data/conversations.db`; older model memory is compacted into a rolling summary while recent messages remain verbatim.
-- Set `LLM_CONTEXT_WINDOW` to the active model/server limit. The budget reserves output and a safety margin before allocating history and retrieved documents.
-- Uploaded files stored in `data/raw/`, referenced by UUID filename; the original name goes into Qdrant point metadata
+- `frontend/src/App.jsx` — single-page chat/upload/document/conversation UI; cancellable SSE rendering; accurate indexed/up-to-date upload states; client history tail for persistence reconciliation; `@rag`; stable-ID deletion.
+- `frontend/src/api.js` — configurable `VITE_API_BASE_URL`, optional API key, Axios JSON calls and abortable fetch/SSE reader.
+- `frontend/src/App.css` — Editorial Ink component styles and CJK/Markdown rendering.
+- `frontend/src/index.css` — reset, texture and local system font stack; no runtime Google Fonts dependency.
+- `frontend/.dockerignore` — excludes local Vite env files, dependencies and build output from the frontend image context.
+- `frontend/Dockerfile` / `frontend/nginx.conf` — multi-stage production build and SPA serving.
+
+The frontend remains a large single component. Do not claim it has already been componentized.
+
+### Evaluation
+
+- `evaluation/run_retrieval_eval.py` — production retriever runner; `retrieval-eval-v1` report shape with `metric_semantics_version=evidence-label-v2`, dataset hash, Git state, settings snapshot and fingerprint.
+- `evaluation/retrieval_metrics/matching.py` — stable evidence labels; unmatched gold remains in the denominator.
+- `evaluation/retrieval_metrics/evaluator.py` — evidence-level Recall/Precision/MRR/NDCG while preserving original ranks; chunk-level context quality.
+- `evaluation/retrieval_eval_pipeline.ipynb` — deterministic demo/live analysis and multi-experiment comparison; LIVE Rerank records attempted/applied/fallback, DEMO disables Rerank, primary metrics use only top K, and comparison rejects incompatible provenance.
+- `evaluation/datasets/golden_retrieval.example.jsonl` — 22 annotated examples.
+- Notebook runtime packages (`pandas`, `matplotlib`, `seaborn`, `jupyter`, `nbconvert`) are pinned in optional `requirements-eval.txt`; the backend image installs only `requirements.txt`.
+
+Historical reports without `metric_semantics_version=evidence-label-v2` are not comparable to current results. Do not cite their scores as current evidence.
+
+### Infrastructure and tests
+
+- Qdrant is pinned to `qdrant/qdrant:v1.18.2` in Compose.
+- The full Compose profile uses `host.docker.internal` for host-local LLM/embedding services.
+- Root and frontend-specific `.dockerignore` files keep local env files and tool configuration out of Docker build contexts.
+- Python runtime/evaluation packages in `requirements.txt` / `requirements-eval.txt` and frontend packages in `package-lock.json` are version-pinned inputs.
+- `.github/workflows/ci.yml` runs Python 3.11 tests plus Node 22 lint/build.
+- Current offline suite: 160 unittest cases. They mock external boundaries and do not prove real model/Qdrant/browser/load behavior.
 
 ## Dev log habit
 
-After every completed coding task (bug fix, feature, refactor), generate a structured dev log file in `logs/`. Name format: `DevLog-YYYY-MM-DD-简短描述.md`. Reference `logs/DevLog-2025-04-30-文档管理API.md` for the exact format — it includes: date, tags, overview, file change list (表格), API design, implementation details, new dependencies, test verification steps, edge cases, and impact analysis. The `.continue/rules/dev-log.md` rule also enforces this.
+After every completed coding task (bug fix, feature, refactor), generate a structured DevLog in `logs/` named `DevLog-YYYY-MM-DD-简短描述.md`.
+
+Use `logs/DevLog-2025-04-30-文档管理API.md` as the structural reference. Include date, tags, overview, changed files, API design, implementation details, dependencies, verification, edge cases and impact analysis. The `.continue/rules/dev-log.md` rule also applies.
 
 ## AGENTS.md maintenance
 
-After every code change (except log files in `logs/`), update AGENTS.md to reflect the current project state: new/removed endpoints, new/removed dependencies, changed file responsibilities, new architectural patterns, etc. Keep it accurate and current — stale AGENTS.md is worse than none.
+After every code change except log-only changes, update this file to reflect endpoints, dependencies, responsibilities, architecture and test count. Stale architecture guidance is worse than none.
 
 ## 校招准备文档维护
 
-`校招准备.md` is the user's on-demand campus-recruiting interview study guide for this project. Do **not** update it after routine code changes or as part of the normal AGENTS.md/dev-log maintenance flow.
+`校招准备.md` is the user's on-demand campus-recruiting study guide. Do not update it as routine maintenance.
 
-Only update or rebuild `校招准备.md` when the user explicitly asks to update, refresh, rewrite, or regenerate the “校招准备” file. When triggered:
+Only update or rebuild it when the user explicitly asks to update, refresh, rewrite or regenerate the “校招准备” file. When triggered:
 
-1. Read all `logs/DevLog-*.md` files and `logs/项目说明与进度.md` to reconstruct the project iteration history.
-2. Inspect the current code and configuration so superseded historical implementations are clearly distinguished from current behavior.
-3. Keep the guide detailed, beginner-friendly, interview-oriented, and easy to memorize.
-4. Cover the project purpose, architecture, end-to-end data flows, module responsibilities, iteration timeline, design decisions, tradeoffs, failures/fallbacks, evaluation metrics/results, known limitations, improvement roadmap, high-frequency interview questions, concise oral versions, and revision checklists.
-5. Be explicit about discrepancies between historical DevLogs and current code, and never present aspirational or outdated behavior as already implemented.
+1. Read all `logs/DevLog-*.md` files and `logs/项目说明与进度.md`.
+2. Inspect current code and configuration; clearly distinguish superseded history from current behavior.
+3. Keep it detailed, beginner-friendly, interview-oriented and easy to memorize.
+4. Cover purpose, architecture, data flows, module responsibilities, iteration timeline, decisions, tradeoffs, failures/fallbacks, evaluation semantics/results, limitations, roadmap, high-frequency questions, oral versions and revision checklists.
+5. Never present aspirations, historical bugs or old evaluation numbers as current capability.

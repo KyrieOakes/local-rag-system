@@ -1,11 +1,4 @@
-"""
-RAG 答案生成模块（Chain）。
-
-负责 RAG 流水线的第 4-5 步：
-1. format_documents_for_context() — 将检索到的文档列表格式化为 LLM 提示词所需的上下文字符串
-2. _format_history() — 将对话历史格式化为提示词所需的历史字符串（最多 2048 token 预算）
-3. generate_answer() — 构建 LangChain 链（rag_prompt | llm | StrOutputParser），调用 LLM 生成答案
-"""
+"""Answer-generation chain consuming pre-budgeted memory and documents."""
 
 import logging
 import time

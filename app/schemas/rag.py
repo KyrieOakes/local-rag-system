@@ -19,8 +19,18 @@ class Message(BaseModel):
 
 class QueryRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=20_000, description="User question")
-    conversation_id: str | None = Field(None, description="Conversation ID (null = new conversation)")
-    history: list[Message] = Field(default_factory=list, description="Recent conversation messages for context")
+    conversation_id: str | None = Field(
+        None,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]+$",
+        description="Conversation ID (null = new conversation)",
+    )
+    history: list[Message] = Field(
+        default_factory=list,
+        max_length=100,
+        description="Recent conversation messages used only for reconciliation",
+    )
     force_rag: bool = Field(False, description="Force RAG retrieval regardless of routing decision")
 
 

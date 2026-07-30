@@ -1,20 +1,27 @@
 /**
  * 后端 API 通信层。
  *
- * 封装所有与 FastAPI 后端（http://127.0.0.1:8000）的 HTTP 请求：
+ * 封装所有与 FastAPI 后端的 HTTP 请求：
  * - healthCheck() — GET /health，检查后端在线状态
  * - uploadDocument(file) — POST /documents/upload，上传单个文件
  * - uploadDocuments(files) — POST /documents/upload-batch，批量上传文件
  * - queryRag({question, conversationId, history, forceRag}) — POST /rag/query，发送 RAG 查询
  * - listDocuments() — GET /documents，列出已索引文档
- * - deleteDocument(source) — DELETE /documents/{source}，删除文档
+ * - deleteDocument(identifier) — DELETE /documents/{document_id_or_source}，删除文档
  *
  * 所有请求通过 axios 实例发送，baseURL 统一配置。
  */
 import axios from 'axios';
 
+export const API_BASE_URL = (
+  import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000'
+).replace(/\/+$/, '');
+const API_KEY = import.meta.env.VITE_API_KEY || '';
+const authHeaders = API_KEY ? { 'X-API-Key': API_KEY } : {};
+
 const api = axios.create({
-  baseURL: 'http://127.0.0.1:8000',
+  baseURL: API_BASE_URL,
+  headers: authHeaders,
 });
 
 export async function healthCheck() {
@@ -65,8 +72,8 @@ export async function listDocuments() {
   return res.data;
 }
 
-export async function deleteDocument(source) {
-  const res = await api.delete(`/documents/${encodeURIComponent(source)}`);
+export async function deleteDocument(identifier) {
+  const res = await api.delete(`/documents/${encodeURIComponent(identifier)}`);
   return res.data;
 }
 
@@ -102,23 +109,31 @@ export async function deleteConversation(conversationId) {
  * @param {function} callbacks.onError - ({message, phase}) => void
  */
 export async function queryRagStream(
-  { question, conversationId, history, forceRag },
+  { question, conversationId, history, forceRag, signal },
   callbacks
 ) {
-  const response = await fetch('http://127.0.0.1:8000/rag/query/stream', {
+  const response = await fetch(`${API_BASE_URL}/rag/query/stream`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders,
+    },
     body: JSON.stringify({
       question,
       conversation_id: conversationId || null,
       history: history || [],
       force_rag: forceRag || false,
     }),
+    signal,
   });
 
   if (!response.ok) {
     const text = await response.text();
     throw new Error(text || `HTTP ${response.status}`);
+  }
+
+  if (!response.body) {
+    throw new Error('Streaming response body is unavailable');
   }
 
   const reader = response.body.getReader();

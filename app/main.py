@@ -1,24 +1,18 @@
-"""
-FastAPI 应用程序入口。
-
-职责：
-- 创建 FastAPI 应用实例，配置 CORS 中间件（允许前端 :5173 的跨域请求）
-- 注册三个路由模块：health（健康检查）、documents（文档管理）、rag（RAG 查询）
-- 提供根路径 / 的欢迎信息
-- 配置全局日志格式
-
-这是整个后端服务的启动文件，通过 uvicorn 运行。
-"""
+"""FastAPI application entry point and cross-cutting middleware."""
 
 import logging
+import secrets
+import uuid
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.health import router as health_router
 from app.api.documents import router as documents_router
 from app.api.rag import router as rag_router
 from app.api.conversations import router as conversations_router
+from app.core.config import settings
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,24 +24,46 @@ app = FastAPI(
     title="Local RAG System",
     version="0.1.0",
 )
-# 配置CORS中间件，允许来自指定前端地址的跨域请求，以便前端能够与后端API进行通信
+@app.middleware("http")
+async def request_identity_and_optional_api_key(request: Request, call_next):
+    """Attach a request ID and enforce the optional local API key.
+
+    Authentication remains disabled when ``APP_API_KEY`` is blank, preserving
+    the trusted single-user local workflow. Health endpoints stay available to
+    container orchestrators without credentials.
+    """
+    request_id = request.headers.get("X-Request-ID", "")
+    if not request_id or len(request_id) > 128:
+        request_id = uuid.uuid4().hex
+    request.state.request_id = request_id
+
+    path = request.url.path
+    is_public_health = path in {"/", "/health", "/health/ready"}
+    if settings.app_api_key and not is_public_health:
+        supplied_key = request.headers.get("X-API-Key", "")
+        if not secrets.compare_digest(supplied_key, settings.app_api_key):
+            return JSONResponse(
+                {"detail": "Invalid or missing API key"},
+                status_code=401,
+                headers={"X-Request-ID": request_id},
+            )
+
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+# Register CORS after the custom middleware so it remains the outer layer and
+# also decorates early 401 responses returned by API-key enforcement.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://[::1]:5173",
-    ],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 将健康检查路由和文档相关的路由注册到FastAPI应用中，使得这些路由能够处理相应的API请求
 app.include_router(health_router)
-# 将文档相关的路由注册到FastAPI应用中，使得这些路由能够处理相应的API请求
 app.include_router(documents_router)
-# 将RAG相关的路由注册到FastAPI应用中，使得这些路由能够处理相应的API请求
 app.include_router(rag_router)
 app.include_router(conversations_router)
 

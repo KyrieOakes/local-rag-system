@@ -1,140 +1,82 @@
-"""
-Qdrant 向量数据库访问模块。
+"""Cached Qdrant access for retrieval plus legacy compatibility wrappers."""
 
-提供 Qdrant 向量存储的完整访问接口：
-- get_vectorstore() — 获取已有集合的 QdrantVectorStore 实例（用于检索）
-- create_vectorstore_from_documents() — 从文档列表创建/追加到 Qdrant 集合（已弃用，
-  推荐使用 bulk_writer 的批量 upsert）
-- list_all_documents() — 列出所有已索引的文档（按 source 分组，返回文件名、类型、分块数）
-- delete_document_by_source() — 按原始文件名删除文档的所有分块
-
-底层通过 qdrant_client 直接操作 Qdrant，不使用 LangChain 封装。
-"""
+import warnings
+from functools import lru_cache
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Filter, FieldCondition, MatchValue
 from langchain_qdrant import QdrantVectorStore
 
 from app.core.config import settings
 from app.rag.embeddings import get_embedding_model
+from app.rag.ingestion.bulk_writer import (
+    delete_chunks_by_source,
+    list_indexed_documents,
+)
+
+
+@lru_cache(maxsize=8)
+def _build_qdrant_client(url: str) -> QdrantClient:
+    return QdrantClient(url=url)
 
 
 def _get_qdrant_client() -> QdrantClient:
-    """获取底层 Qdrant 客户端，用于管理操作"""
-    return QdrantClient(url=settings.qdrant_url)
+    """Reuse the transport client for the effective Qdrant URL."""
+    return _build_qdrant_client(settings.qdrant_url)
 
 
-# 获取现有的向量数据库实例，如果不存在则创建一个新的实例
-def get_vectorstore() -> QdrantVectorStore:
-    # 获取嵌入模型实例
-    embedding_model = get_embedding_model()
-
-    # 从现有的Qdrant集合中创建一个QdrantVectorStore实例，
-    # 使用指定的嵌入模型、集合名称和URL连接到Qdrant数据库
+@lru_cache(maxsize=8)
+def _build_vectorstore(
+    qdrant_url: str,
+    collection_name: str,
+    embedding_base_url: str,
+    embedding_model: str,
+) -> QdrantVectorStore:
     return QdrantVectorStore.from_existing_collection(
-        embedding=embedding_model,
-        collection_name=settings.qdrant_collection,
-        url=settings.qdrant_url,
+        embedding=get_embedding_model(),
+        collection_name=collection_name,
+        url=qdrant_url,
     )
 
-# 从文档列表创建一个新的向量数据库实例，并将文档存储到Qdrant数据库中
+
+def get_vectorstore() -> QdrantVectorStore:
+    """Reuse a LangChain vector-store wrapper per effective configuration."""
+    return _build_vectorstore(
+        settings.qdrant_url,
+        settings.qdrant_collection,
+        settings.embedding_base_url,
+        settings.embedding_model,
+    )
+
+
 def create_vectorstore_from_documents(documents):
+    """Deprecated write path; use the versioned ingestion pipeline instead."""
+    warnings.warn(
+        "create_vectorstore_from_documents is deprecated; use ingest_file_paths",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     embedding_model = get_embedding_model()
 
-    # 从文档列表创建一个新的QdrantVectorStore实例，并将文档存储到指定的Qdrant集合中，
     return QdrantVectorStore.from_documents(
         documents=documents,
         embedding=embedding_model,
         collection_name=settings.qdrant_collection,
         url=settings.qdrant_url,
-        # 如果集合已经存在，则不强制重新创建，而是使用现有的集合来存储文档
         force_recreate=False,
     )
 
 
 def list_all_documents() -> list[dict]:
-    """
-    列出 Qdrant 中所有不重复的文档（按 source 分组）。
-    返回格式: [{"source": "foo.pdf", "file_type": ".pdf", "chunks": 12}, ...]
-    """
-    client = _get_qdrant_client()
-
-    source_chunk_count: dict[str, int] = {}
-    source_file_type: dict[str, str] = {}
-
-    # 使用 scroll 遍历所有点
-    offset = None
-    while True:
-        records, offset = client.scroll(
-            collection_name=settings.qdrant_collection,
-            scroll_filter=None,
-            limit=500,
-            offset=offset,
-            with_payload=True,
-            with_vectors=False,
-        )
-
-        for record in records:
-            if record.payload is None:
-                continue
-            metadata = record.payload.get("metadata", {})
-            source = metadata.get("source", "unknown")
-            source_chunk_count[source] = source_chunk_count.get(source, 0) + 1
-
-            # 从 source 文件名推断文件类型
-            if source not in source_file_type:
-                suffix = source.rsplit(".", 1)[-1].lower() if "." in source else "unknown"
-                source_file_type[source] = f".{suffix}" if suffix != "unknown" else source
-
-        if offset is None:
-            break
-
-    return [
-        {
-            "source": source,
-            "file_type": source_file_type.get(source, "unknown"),
-            "chunks": count,
-        }
-        for source, count in sorted(source_chunk_count.items())
-    ]
+    """Compatibility alias for the document-ID-aware listing implementation."""
+    return list_indexed_documents(settings.qdrant_collection)
 
 
 def delete_document_by_source(source: str) -> int:
-    """
-    按 source（原始文件名）删除文档的所有分块。
-    返回删除的点数。
-    """
-    client = _get_qdrant_client()
-
-    # 先统计匹配的点数
-    count_result = client.count(
-        collection_name=settings.qdrant_collection,
-        count_filter=Filter(
-            must=[
-                FieldCondition(
-                    key="metadata.source",
-                    match=MatchValue(value=source),
-                )
-            ]
-        ),
-        exact=True,
+    """Deprecated unsafe source-wide delete retained for legacy callers."""
+    warnings.warn(
+        "delete_document_by_source may affect same-name legacy documents; "
+        "use document_service.delete_document with a document_id",
+        DeprecationWarning,
+        stacklevel=2,
     )
-    matched_count = count_result.count
-
-    if matched_count == 0:
-        return 0
-
-    # 删除匹配的点
-    client.delete(
-        collection_name=settings.qdrant_collection,
-        points_selector=Filter(
-            must=[
-                FieldCondition(
-                    key="metadata.source",
-                    match=MatchValue(value=source),
-                )
-            ]
-        ),
-    )
-
-    return matched_count
+    return delete_chunks_by_source(source, settings.qdrant_collection)

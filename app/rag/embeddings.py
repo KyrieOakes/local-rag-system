@@ -12,30 +12,44 @@ import hashlib
 import logging
 import threading
 import time
+from collections import OrderedDict
+from functools import lru_cache
 
 from langchain_openai import OpenAIEmbeddings
+from pydantic import PrivateAttr
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 _CACHE_MAX_SIZE = 256
-_embedding_cache: dict[str, list[float]] = {}
+_embedding_cache: OrderedDict[str, list[float]] = OrderedDict()
 _cache_lock = threading.Lock()
 _cache_hits = 0
 _cache_misses = 0
 
 
 class CachedOpenAIEmbeddings(OpenAIEmbeddings):
-    """OpenAIEmbeddings subclass with LRU-style cache for repeated queries."""
+    """OpenAIEmbeddings subclass with a thread-safe LRU query cache."""
+
+    _localrag_revision: str = PrivateAttr(default="")
 
     def embed_query(self, text: str) -> list[float]:
         global _cache_hits, _cache_misses
-        cache_key = hashlib.md5(text.encode("utf-8")).hexdigest()
+        cache_identity = "\0".join(
+            [
+                str(self.openai_api_base),
+                str(self.model),
+                self._localrag_revision,
+                text,
+            ]
+        )
+        cache_key = hashlib.sha256(cache_identity.encode("utf-8")).hexdigest()
 
         with _cache_lock:
             if cache_key in _embedding_cache:
                 _cache_hits += 1
+                _embedding_cache.move_to_end(cache_key)
                 logger.debug("Embedding cache hit (#%d hits, #%d misses)", _cache_hits, _cache_misses)
                 return _embedding_cache[cache_key]
 
@@ -45,20 +59,41 @@ class CachedOpenAIEmbeddings(OpenAIEmbeddings):
         logger.info("[RAG][STEP 2] embedding 完成，耗时 %.3fs", time.perf_counter() - step2_start)
 
         with _cache_lock:
+            # A concurrent request may have populated the same key while this
+            # request was waiting on the embedding server.
+            if cache_key in _embedding_cache:
+                _embedding_cache.move_to_end(cache_key)
+                return _embedding_cache[cache_key]
             if len(_embedding_cache) >= _CACHE_MAX_SIZE:
-                # Evict oldest entry (first key)
-                oldest = next(iter(_embedding_cache))
-                del _embedding_cache[oldest]
+                _embedding_cache.popitem(last=False)
             _embedding_cache[cache_key] = embedded
             _cache_misses += 1
 
         return embedded
 
 
-def get_embedding_model() -> OpenAIEmbeddings:
-    return CachedOpenAIEmbeddings(
-        model=settings.embedding_model,
-        base_url=settings.embedding_base_url,
-        api_key=settings.embedding_api_key,
+@lru_cache(maxsize=8)
+def _build_embedding_model(
+    model: str,
+    base_url: str,
+    api_key: str,
+    revision: str,
+) -> CachedOpenAIEmbeddings:
+    embedding = CachedOpenAIEmbeddings(
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
         check_embedding_ctx_length=False,
+    )
+    embedding._localrag_revision = revision
+    return embedding
+
+
+def get_embedding_model() -> OpenAIEmbeddings:
+    """Reuse clients per effective embedding configuration."""
+    return _build_embedding_model(
+        settings.embedding_model,
+        settings.embedding_base_url,
+        settings.embedding_api_key,
+        settings.embedding_revision,
     )

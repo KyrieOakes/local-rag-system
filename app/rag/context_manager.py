@@ -567,7 +567,9 @@ def compact_conversation_memory(
         )
 
         try:
-            response = get_llm().invoke(
+            response = get_llm(
+                max_tokens=settings.context_summary_max_tokens
+            ).invoke(
                 [
                     SystemMessage(
                         content="You maintain concise, faithful long-term memory for a chat."

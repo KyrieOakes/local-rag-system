@@ -6,7 +6,7 @@
  * - 侧边栏：系统状态、上传文档入口、文档管理入口
  * - 上传面板（模态框）：支持多文件选择、上传前预览、上传后结果展示
  * - 文档管理面板（模态框）：按文件类型分组列出已索引文档，支持逐个删除
- * - 聊天区：用户消息+AI 回复气泡，Markdown 渲染，来源块展示（含相关性评分）
+ * - 聊天区：用户消息+AI 回复气泡，Markdown 渲染，来源块展示检索分数
  * - 输入区：Enter 发送，Shift+Enter 换行，流式加载动画
  *
  * 交互细节：
@@ -14,15 +14,13 @@
  * - 模态框点击外部或按 Escape 关闭
  * - 欢迎页提供示例提示词，点击自动填入输入框
  * - 上传按钮有 300ms 展开动画
- * - 来源块根据评分着色（High≥0.7 绿色, Medium≥0.5 黄色, Low 红色）
+ * - 来源分数直接显示数值；不同检索/Rerank 策略的分数不使用统一高低阈值
  */
 import { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   healthCheck,
-  uploadDocument,
   uploadDocuments,
-  queryRag,
   queryRagStream,
   listDocuments,
   deleteDocument,
@@ -57,7 +55,7 @@ function App() {
   const [docsList, setDocsList] = useState([]);
   const [docsLoading, setDocsLoading] = useState(false);
   const [docsError, setDocsError] = useState(null);
-  const [deletingSource, setDeletingSource] = useState(null);
+  const [deletingDocument, setDeletingDocument] = useState(null);
   const [deleteMsg, setDeleteMsg] = useState(null);
 
   const messagesEndRef = useRef(null);
@@ -65,6 +63,7 @@ function App() {
   const uploadBtnRef = useRef(null);
   const uploadPanelRef = useRef(null);
   const docMgrPanelRef = useRef(null);
+  const activeQueryControllerRef = useRef(null);
 
   const statusConfig = {
     idle: { label: "Not Checked", color: "#5c5b64" },
@@ -97,6 +96,13 @@ function App() {
     initCheck();
   }, []);
 
+  useEffect(
+    () => () => {
+      activeQueryControllerRef.current?.abort();
+    },
+    []
+  );
+
   // Load conversation list on mount
   useEffect(() => {
     loadConversationList();
@@ -113,6 +119,7 @@ function App() {
 
   async function switchConversation(id) {
     if (loadingConversation) return;
+    activeQueryControllerRef.current?.abort();
     setLoadingConversation(true);
     try {
       const conv = await getConversation(id);
@@ -235,18 +242,18 @@ function App() {
     }
   }
 
-  async function handleDeleteDoc(source) {
-    if (!source || deletingSource) return;
+  async function handleDeleteDoc(identifier, displayName) {
+    if (!identifier || deletingDocument) return;
 
-    setDeletingSource(source);
+    setDeletingDocument(identifier);
     setDeleteMsg(null);
 
     try {
-      await deleteDocument(source);
+      await deleteDocument(identifier);
 
       setDeleteMsg({
         type: "success",
-        text: `Deleted "${source}" successfully.`,
+        text: `Deleted "${displayName}" successfully.`,
       });
 
       const docs = await listDocuments();
@@ -254,12 +261,12 @@ function App() {
     } catch (err) {
       setDeleteMsg({
         type: "error",
-        text: `Failed to delete "${source}": ${
+        text: `Failed to delete "${displayName}": ${
           err.response?.data?.detail || "Unknown error"
         }`,
       });
     } finally {
-      setDeletingSource(null);
+      setDeletingDocument(null);
     }
   }
 
@@ -325,6 +332,8 @@ function App() {
       .filter((m) => m.role === "user" || m.role === "assistant")
       .slice(-20)
       .map(({ role, content }) => ({ role, content }));
+    const queryController = new AbortController();
+    activeQueryControllerRef.current = queryController;
 
     try {
       await queryRagStream(
@@ -333,6 +342,7 @@ function App() {
           conversationId,
           history: recentHistory,
           forceRag,
+          signal: queryController.signal,
         },
         {
           onRouting({ routing, conversation_id }) {
@@ -394,23 +404,34 @@ function App() {
         }
       );
     } catch (err) {
+      const wasCancelled = err.name === "AbortError";
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === placeholderId
             ? {
                 ...msg,
-                content:
-                  err.message ||
-                  "Query failed. Please check whether the backend service is running.",
-                sources: [],
-                routing: "error",
+                content: wasCancelled
+                  ? msg.content || "Generation stopped."
+                  : err.message ||
+                    "Query failed. Please check whether the backend service is running.",
+                sources: wasCancelled ? msg.sources : [],
+                routing: wasCancelled ? msg.routing : "error",
                 loading: false,
+                statusText: null,
               }
             : msg
         )
       );
       setLoadingQuery(false);
+    } finally {
+      if (activeQueryControllerRef.current === queryController) {
+        activeQueryControllerRef.current = null;
+      }
     }
+  }
+
+  function handleCancelQuery() {
+    activeQueryControllerRef.current?.abort();
   }
 
   function handleKeyDown(e) {
@@ -445,15 +466,30 @@ function App() {
 
       setUploadResults(results);
 
-      const succeeded = results.filter((r) => r.status === "indexed").length;
+      const indexed = results.filter((r) => r.status === "indexed").length;
+      const upToDate = results.filter(
+        (r) => r.status === "up_to_date"
+      ).length;
       const failed = results.filter((r) => r.status === "error").length;
+      const cleanupPending = results.filter(
+        (r) => r.cleanup_pending
+      ).length;
 
       if (failed === 0) {
+        const summary = [
+          indexed > 0 ? `${indexed} indexed` : null,
+          upToDate > 0 ? `${upToDate} already up to date` : null,
+          cleanupPending > 0
+            ? `${cleanupPending} old-version cleanup pending`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(", ");
         setUploadMsg({
-          type: "success",
-          text: `${succeeded} file${succeeded !== 1 ? "s" : ""} uploaded and indexed successfully.`,
+          type: cleanupPending > 0 ? "partial" : "success",
+          text: `${summary}.`,
         });
-      } else if (succeeded === 0) {
+      } else if (indexed === 0 && upToDate === 0) {
         setUploadMsg({
           type: "error",
           text: `All ${failed} file${failed !== 1 ? "s" : ""} failed.`,
@@ -461,7 +497,7 @@ function App() {
       } else {
         setUploadMsg({
           type: "partial",
-          text: `${succeeded} indexed, ${failed} failed.`,
+          text: `${indexed} indexed, ${upToDate} already up to date, ${failed} failed, ${cleanupPending} cleanup pending.`,
         });
       }
     } catch (err) {
@@ -477,6 +513,7 @@ function App() {
   }
 
   function newChat() {
+    activeQueryControllerRef.current?.abort();
     setMessages([]);
     setInput("");
     setConversationId(null);
@@ -516,22 +553,9 @@ function App() {
     );
   }
 
-  function getRelevanceLabel(score) {
+  function formatRetrievalScore(score) {
     const value = Number(score);
-
-    if (Number.isNaN(value)) return "Unknown";
-    if (value >= 0.7) return "High";
-    if (value >= 0.5) return "Medium";
-    return "Low";
-  }
-
-  function getRelevanceColor(score) {
-    const value = Number(score);
-
-    if (Number.isNaN(value)) return "#9ca3af";
-    if (value >= 0.7) return "#22c55e";
-    if (value >= 0.5) return "#f59e0b";
-    return "#ef4444";
+    return Number.isFinite(value) ? value.toFixed(3) : "N/A";
   }
 
   function formatConvTime(timestamp) {
@@ -729,7 +753,7 @@ function App() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".pdf,.txt,.md"
+                accept=".pdf,.txt,.md,.markdown,.docx"
                 multiple
                 style={{ display: "none" }}
                 onChange={(e) => {
@@ -775,7 +799,7 @@ function App() {
                   </svg>
                   <p className="modal-upload-text">Click to choose files</p>
                   <p className="modal-upload-hint">
-                    PDF, TXT, and Markdown files are supported. Multiple files allowed.
+                    PDF, TXT, Markdown, and DOCX files are supported. Multiple files allowed.
                   </p>
                 </>
               )}
@@ -785,15 +809,13 @@ function App() {
               <div className="modal-file-list">
                 {files.map((f, idx) => {
                   const result = getFileResult(f.name);
+                  const resultSucceeded =
+                    result && result.status !== "error";
                   return (
                     <div
                       key={`${f.name}-${idx}`}
                       className={`modal-file-row${
-                        result
-                          ? result.status === "indexed"
-                            ? " success"
-                            : " error"
-                          : ""
+                        result ? resultSucceeded ? " success" : " error" : ""
                       }`}
                     >
                       <span className="modal-file-row-icon">
@@ -810,15 +832,19 @@ function App() {
                       {result ? (
                         <span
                           className={`modal-file-row-status ${
-                            result.status === "indexed" ? "success" : "error"
+                            resultSucceeded ? "success" : "error"
                           }`}
                           title={
                             result.status === "error"
                               ? result.error
-                              : `${result.chunks} chunks`
+                              : result.cleanup_pending
+                                ? "Indexed; old-version cleanup will be retried"
+                              : result.status === "up_to_date"
+                                ? "Already up to date"
+                                : `${result.chunks} chunks indexed`
                           }
                         >
-                          {result.status === "indexed" ? "✓" : "✗"}
+                          {resultSucceeded ? "✓" : "✗"}
                         </span>
                       ) : (
                         <button
@@ -938,8 +964,10 @@ function App() {
                     </div>
 
                     <div className="docmgr-group-files">
-                      {docs.map((doc) => (
-                        <div key={doc.source} className="docmgr-file-row">
+                      {docs.map((doc) => {
+                        const documentIdentifier = doc.document_id || doc.source;
+                        return (
+                        <div key={documentIdentifier} className="docmgr-file-row">
                           <span
                             className="docmgr-file-name"
                             title={doc.source}
@@ -953,11 +981,13 @@ function App() {
 
                           <button
                             className="docmgr-delete-btn"
-                            onClick={() => handleDeleteDoc(doc.source)}
-                            disabled={deletingSource === doc.source}
+                            onClick={() =>
+                              handleDeleteDoc(documentIdentifier, doc.source)
+                            }
+                            disabled={deletingDocument === documentIdentifier}
                             title={`Delete ${doc.source}`}
                           >
-                            {deletingSource === doc.source ? (
+                            {deletingDocument === documentIdentifier ? (
                               <span className="docmgr-delete-loader"></span>
                             ) : (
                               <svg
@@ -974,7 +1004,8 @@ function App() {
                             )}
                           </button>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 ))}
@@ -1201,15 +1232,12 @@ function App() {
                                   `Source ${sourceIndex + 1}`}
                               </span>
 
-                              {source.score !== undefined && (
+                              {source.score != null && (
                                 <span
                                   className="source-score"
-                                  style={{
-                                    color: getRelevanceColor(source.score),
-                                  }}
-                                  title={`Score: ${source.score}`}
+                                  title="Strategy-specific retrieval/rerank score"
                                 >
-                                  {getRelevanceLabel(source.score)}
+                                  Score {formatRetrievalScore(source.score)}
                                 </span>
                               )}
                             </div>
@@ -1246,12 +1274,20 @@ function App() {
 
             <button
               className="send-btn"
-              onClick={handleSend}
-              disabled={!input.trim() || loadingQuery}
-              title="Send"
+              onClick={loadingQuery ? handleCancelQuery : handleSend}
+              disabled={!loadingQuery && !input.trim()}
+              title={loadingQuery ? "Stop generation" : "Send"}
             >
               {loadingQuery ? (
-                <span className="send-loader"></span>
+                <svg
+                  width="15"
+                  height="15"
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <rect x="5" y="5" width="14" height="14" rx="2"></rect>
+                </svg>
               ) : (
                 <svg
                   width="18"

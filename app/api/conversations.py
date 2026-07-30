@@ -24,9 +24,9 @@ def list_conversations():
     try:
         store = get_conversation_store()
         return store.list_conversations()
-    except Exception as exc:
+    except Exception:
         logger.exception("Failed to list conversations")
-        raise HTTPException(status_code=500, detail=f"Failed to list conversations: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to list conversations.")
 
 
 @router.get("/{conversation_id}", response_model=ConversationDetail)
@@ -40,9 +40,9 @@ def get_conversation(conversation_id: str):
         return ConversationDetail(**result)
     except HTTPException:
         raise
-    except Exception as exc:
+    except Exception:
         logger.exception("Failed to get conversation %s", conversation_id)
-        raise HTTPException(status_code=500, detail=f"Failed to get conversation: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to get conversation.")
 
 
 @router.delete("/{conversation_id}")
@@ -56,6 +56,6 @@ def delete_conversation(conversation_id: str):
         return {"ok": True, "deleted": conversation_id}
     except HTTPException:
         raise
-    except Exception as exc:
+    except Exception:
         logger.exception("Failed to delete conversation %s", conversation_id)
-        raise HTTPException(status_code=500, detail=f"Failed to delete conversation: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to delete conversation.")

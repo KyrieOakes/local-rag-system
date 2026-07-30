@@ -3,8 +3,9 @@
 
 测试 evaluation/retrieval_metrics/matching.py 的匹配函数：
 - 按 file_path + text 片段匹配检索结果
-- 未匹配的标注保留在 relevance_scores 中（供 NDCG 理想排序用）
+- 未匹配的标注仍保留为稳定 evidence（Recall/NDCG 分母）
 - 无 chunk_index 时使用内容哈希生成 ID
+- 旧数据没有 evidence_id 时生成稳定哈希 ID
 - 文本匹配对大小写和空白容忍
 - 按 source/file_name 匹配（无需 file_path）
 - 错误文件+正确片段不算匹配
@@ -16,6 +17,7 @@ import unittest
 from evaluation.retrieval_metrics.matching import (
     RelevantSource,
     build_retrieved_item,
+    make_evidence_id,
     match_retrieved_to_relevant_sources,
 )
 
@@ -29,14 +31,23 @@ class RetrievalMatchingTest(unittest.TestCase):
 
         matched = match_retrieved_to_relevant_sources(
             [item],
-            [RelevantSource(file_path="docs/rag.md", text="splits, embeds", relevance=3)],
+            [
+                RelevantSource(
+                    file_path="docs/rag.md",
+                    text="splits, embeds",
+                    relevance=3,
+                    evidence_id="rag-pipeline",
+                )
+            ],
         )
 
         self.assertEqual(matched.retrieved_ids, ["docs/rag.md#chunk:2"])
-        self.assertEqual(matched.relevant_ids, {"docs/rag.md#chunk:2"})
-        self.assertEqual(matched.relevance_scores["docs/rag.md#chunk:2"], 3)
+        self.assertEqual(matched.evidence_ids, ["rag-pipeline"])
+        self.assertEqual(matched.matched_evidence_ids, {"rag-pipeline"})
+        self.assertEqual(matched.evidence_scores["rag-pipeline"], 3)
+        self.assertEqual(matched.matched_chunk_ids, {"docs/rag.md#chunk:2"})
 
-    def test_unmatched_label_stays_in_relevance_scores_for_ndcg_ideal(self):
+    def test_unmatched_label_stays_in_gold_evidence_denominator(self):
         item = build_retrieved_item(
             content="Unrelated content",
             metadata={"file_path": "docs/other.md", "chunk_index": 1},
@@ -44,11 +55,33 @@ class RetrievalMatchingTest(unittest.TestCase):
 
         matched = match_retrieved_to_relevant_sources(
             [item],
-            [RelevantSource(file_path="docs/rag.md", relevance=2)],
+            [
+                RelevantSource(
+                    file_path="docs/rag.md",
+                    relevance=2,
+                    evidence_id="expected-rag",
+                )
+            ],
         )
 
-        self.assertEqual(matched.relevant_ids, set())
-        self.assertEqual(matched.relevance_scores, {"expected:0": 2})
+        self.assertEqual(matched.matched_evidence_ids, set())
+        self.assertEqual(matched.evidence_ids, ["expected-rag"])
+        self.assertEqual(matched.evidence_scores, {"expected-rag": 2})
+
+    def test_legacy_label_without_id_gets_stable_evidence_hash(self):
+        first = RelevantSource(
+            file_path="docs/rag.md",
+            text="vector retrieval",
+            relevance=2,
+        )
+        same_label = RelevantSource(
+            file_path="docs/rag.md",
+            text="vector   retrieval",
+            relevance=3,
+        )
+
+        self.assertEqual(make_evidence_id(first), make_evidence_id(same_label))
+        self.assertTrue(make_evidence_id(first).startswith("evidence:"))
 
     def test_content_hash_id_is_used_when_chunk_index_is_missing(self):
         item = build_retrieved_item(
@@ -66,10 +99,17 @@ class RetrievalMatchingTest(unittest.TestCase):
 
         matched = match_retrieved_to_relevant_sources(
             [item],
-            [RelevantSource(file_path="handbook/hr.md", text="REMOTE work after", relevance=2)],
+            [
+                RelevantSource(
+                    file_path="handbook/hr.md",
+                    text="REMOTE work after",
+                    relevance=2,
+                    evidence_id="remote-work",
+                )
+            ],
         )
 
-        self.assertEqual(matched.relevant_ids, {"handbook/hr.md#chunk:4"})
+        self.assertEqual(matched.matched_evidence_ids, {"remote-work"})
 
     def test_source_name_can_match_uploaded_documents_without_file_path(self):
         item = build_retrieved_item(
@@ -79,10 +119,16 @@ class RetrievalMatchingTest(unittest.TestCase):
 
         matched = match_retrieved_to_relevant_sources(
             [item],
-            [RelevantSource(source="support_playbook.pdf", text="severity triage")],
+            [
+                RelevantSource(
+                    source="support_playbook.pdf",
+                    text="severity triage",
+                    evidence_id="severity-triage",
+                )
+            ],
         )
 
-        self.assertEqual(matched.relevant_ids, {"support_playbook.pdf#chunk:7"})
+        self.assertEqual(matched.matched_evidence_ids, {"severity-triage"})
 
     def test_wrong_file_with_right_snippet_does_not_count_as_relevant(self):
         item = build_retrieved_item(
@@ -92,10 +138,16 @@ class RetrievalMatchingTest(unittest.TestCase):
 
         matched = match_retrieved_to_relevant_sources(
             [item],
-            [RelevantSource(file_path="docs/current_deploy.md", text="rollback verification")],
+            [
+                RelevantSource(
+                    file_path="docs/current_deploy.md",
+                    text="rollback verification",
+                    evidence_id="rollback",
+                )
+            ],
         )
 
-        self.assertEqual(matched.relevant_ids, set())
+        self.assertEqual(matched.matched_evidence_ids, set())
 
 
 if __name__ == "__main__":

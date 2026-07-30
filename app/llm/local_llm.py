@@ -1,21 +1,17 @@
-"""
-LLM 实例工厂模块。
-
-根据配置文件中的 llm_provider 设置，返回对应的 ChatOpenAI 实例：
-- "local": 连接到本地 LM Studio / Ollama（使用本地 LLM 配置）
-- "cloud"（或其他值）: 连接到云端 API（DeepSeek / OpenAI 兼容接口）
-
-已知问题：当前代码中 "local" 和 "cloud" 分支的条件判断与实际配置恰好相反——
-选择 "local" 时走的是 cloud 配置，选择 "cloud" 时走的是 local 配置。
-使用时无需改动业务代码，只需修改 .env 中的配置即可切换 LLM 提供商。
-"""
+"""Create OpenAI-compatible chat clients for local or cloud inference."""
 
 from langchain_openai import ChatOpenAI
 
 from app.core.config import settings
 
 
-def get_llm() -> ChatOpenAI:
+def get_llm(max_tokens: int | None = None) -> ChatOpenAI:
+    """Return a configured chat model.
+
+    ``max_tokens`` lets routing and summary calls reserve a smaller output
+    budget than final answer generation while sharing the same provider.
+    """
+    output_tokens = max_tokens or settings.llm_reserved_output_tokens
     if settings.llm_provider == "cloud":
         return ChatOpenAI(
             model=settings.cloud_llm_model,
@@ -24,7 +20,7 @@ def get_llm() -> ChatOpenAI:
             temperature=0.2,
             timeout=30,
             max_retries=1,
-            max_tokens=settings.llm_reserved_output_tokens,
+            max_tokens=output_tokens,
         )
 
     # 默认: 本地 LLM (LM Studio / Ollama)
@@ -35,5 +31,5 @@ def get_llm() -> ChatOpenAI:
         temperature=0.2,
         timeout=30,
         max_retries=1,
-        max_tokens=settings.llm_reserved_output_tokens,
+        max_tokens=output_tokens,
     )

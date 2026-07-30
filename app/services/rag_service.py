@@ -21,10 +21,10 @@ STEP 6 — 组装响应 + 记录日志
 import asyncio
 import json
 import logging
-import threading
 import time
 import uuid
 
+from app.core.background_tasks import submit_background_task
 from app.core.config import settings
 from app.rag.chain import generate_answer, generate_answer_stream
 from app.rag.context_manager import (
@@ -37,11 +37,20 @@ from app.rag.context_manager import (
 from app.rag.conversation_store import get_conversation_store
 from app.rag.query_processor import QUERY_PROCESSING_SYSTEM_PROMPT, process_query
 from app.rag.query_logger import log_rag_query
-from app.rag.reranker import get_reranker
+from app.rag.reranker import build_rerank_candidates, get_reranker
 from app.rag.retriever import retrieve_relevant_documents
 from app.schemas.rag import QueryResponse, SourceChunk
 
 logger = logging.getLogger(__name__)
+
+_STREAM_ERROR_MESSAGES = {
+    "context": "Unable to prepare conversation context.",
+    "routing": "Unable to route the request.",
+    "retrieval": "Unable to retrieve relevant documents.",
+    "rerank": "Unable to rerank retrieved documents.",
+    "generation": "Unable to generate the answer.",
+}
+DIRECT_STREAM_CHUNK_CHARS = 12
 
 
 def _save_exchange_safe(
@@ -50,6 +59,7 @@ def _save_exchange_safe(
     assistant_message: str,
     sources: list,
     routing: str,
+    turn_id: str | None = None,
 ):
     """Best-effort conversation persistence — never raises."""
     try:
@@ -61,11 +71,111 @@ def _save_exchange_safe(
             assistant_message=assistant_message,
             sources=sources_raw,
             routing=routing,
+            turn_id=turn_id,
         )
         if saved:
             compact_conversation_memory(conversation_id, store=store)
     except Exception:
         logger.exception("Failed to persist conversation %s", conversation_id)
+
+
+def _rerank_results(
+    retrieval_query: str,
+    retrieved_results: list,
+    top_k: int,
+) -> list:
+    """Run the configured reranker behind one stable service boundary."""
+    reranker = get_reranker()
+    candidates = build_rerank_candidates(retrieved_results)
+    return reranker.rerank(
+        query=retrieval_query,
+        candidates=candidates,
+        top_k=top_k,
+    )
+
+
+def _schedule_completed_query(
+    *,
+    conversation_id: str,
+    turn_id: str,
+    question: str,
+    answer: str,
+    sources: list,
+    routing: str,
+    rewritten_query: str,
+    intent: str,
+    retrieved_results: list,
+    top_k: int,
+    stage_timings: dict[str, float],
+) -> None:
+    """Queue persistence and tracing only after an answer fully completes."""
+    persistence_future = submit_background_task(
+        _save_exchange_safe,
+        conversation_id,
+        question,
+        answer,
+        sources,
+        routing,
+        turn_id,
+    )
+    logging_future = submit_background_task(
+        log_rag_query,
+        question,
+        rewritten_query,
+        intent,
+        retrieved_results,
+        answer,
+        top_k,
+        conversation_id=conversation_id,
+        routing=routing,
+        stage_timings=stage_timings,
+        turn_id=turn_id,
+    )
+    if persistence_future is None:
+        logger.error(
+            "Conversation persistence was not queued for conversation=%s turn=%s",
+            conversation_id,
+            turn_id,
+        )
+    if logging_future is None:
+        logger.error(
+            "Query trace was not queued for conversation=%s turn=%s",
+            conversation_id,
+            turn_id,
+        )
+
+
+def _stream_error(
+    phase: str,
+    conversation_id: str,
+) -> str:
+    """Build the stable SSE error payload shared by all stream phases."""
+    return _sse_event(
+        "error",
+        {
+            "message": _STREAM_ERROR_MESSAGES.get(
+                phase,
+                "Unable to complete the request.",
+            ),
+            "phase": phase,
+            "conversation_id": conversation_id,
+        },
+    )
+
+
+def _stream_context_limit_error(
+    error: ContextWindowExceededError,
+    conversation_id: str,
+) -> str:
+    """Expose the deliberate, user-actionable context limit error only."""
+    return _sse_event(
+        "error",
+        {
+            "message": str(error),
+            "phase": "context",
+            "conversation_id": conversation_id,
+        },
+    )
 
 
 def _build_sources(retrieved_results: list) -> list[SourceChunk]:
@@ -84,21 +194,39 @@ def _build_sources(retrieved_results: list) -> list[SourceChunk]:
     ]
 
 
+def _iter_text_chunks(
+    text: str,
+    chunk_chars: int = DIRECT_STREAM_CHUNK_CHARS,
+):
+    """Yield small Unicode slices without dropping or inventing whitespace."""
+    if chunk_chars < 1:
+        raise ValueError("chunk_chars must be at least 1")
+    for start in range(0, len(text), chunk_chars):
+        yield text[start:start + chunk_chars]
+
+
 def query_rag(
     question: str,
     top_k: int = 5,
     conversation_id: str | None = None,
     history: list | None = None,
     force_rag: bool = False,
+    turn_id: str | None = None,
 ) -> QueryResponse:
+    total_start = time.perf_counter()
+    stage_timings: dict[str, float] = {}
     history = history or []
     conversation_id = conversation_id or uuid.uuid4().hex[:12]
+    turn_id = turn_id or uuid.uuid4().hex
+
+    context_start = time.perf_counter()
     memory = resolve_conversation_memory(conversation_id, history)
     routing_memory = prepare_routing_memory(
         question,
         memory,
         QUERY_PROCESSING_SYSTEM_PROMPT,
     )
+    stage_timings["context"] = time.perf_counter() - context_start
 
     # STEP 2 — Query processing + RAG routing gate
     step2_start = time.perf_counter()
@@ -108,9 +236,12 @@ def query_rag(
         history=routing_memory.messages,
         conversation_summary=routing_memory.summary,
     )
+    stage_timings["routing"] = time.perf_counter() - step2_start
 
     needs_rag = processed["needs_rag"] or force_rag
-    routing = "rag" if needs_rag else ("greeting" if processed["intent"] == "chitchat" else "direct")
+    routing = "rag" if needs_rag else (
+        "greeting" if processed["intent"] == "chitchat" else "direct"
+    )
 
     logger.info(
         "[RAG][STEP 2] Query processing 完成，耗时 %.3fs, needs_rag=%s, intent=%s, routing=%s",
@@ -130,19 +261,20 @@ def query_rag(
             conversation_id=conversation_id,
             routing=routing,
         )
-        # Async logging (non-blocking)
-        threading.Thread(
-            target=log_rag_query,
-            args=(question, processed.get("rewritten_query", question),
-                  processed["intent"], [], answer, top_k),
-            daemon=True,
-        ).start()
-        # Persist conversation (non-blocking, best-effort)
-        threading.Thread(
-            target=_save_exchange_safe,
-            args=(conversation_id, question, answer, [], routing),
-            daemon=True,
-        ).start()
+        stage_timings["total"] = time.perf_counter() - total_start
+        _schedule_completed_query(
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            question=question,
+            answer=answer,
+            sources=[],
+            routing=routing,
+            rewritten_query=processed.get("rewritten_query") or question,
+            intent=processed["intent"],
+            retrieved_results=[],
+            top_k=top_k,
+            stage_timings=stage_timings,
+        )
         return response
 
     # RAG path — full pipeline
@@ -150,7 +282,12 @@ def query_rag(
 
     # Decide retrieval size: wider fetch for rerank, narrow otherwise
     reranker_enabled = settings.reranker_type.lower() not in ("none", "")
-    retrieval_k = settings.reranker_candidate_top_n if reranker_enabled else top_k
+    final_top_k = settings.reranker_final_top_k if reranker_enabled else top_k
+    retrieval_k = (
+        settings.reranker_candidate_top_n
+        if reranker_enabled
+        else final_top_k
+    )
 
     # STEP 3 — Vector retrieval
     step3_start = time.perf_counter()
@@ -160,38 +297,44 @@ def query_rag(
         top_k=retrieval_k,
     )
     step3_elapsed = time.perf_counter() - step3_start
+    stage_timings["retrieval"] = step3_elapsed
     logger.info("[RAG][STEP 3] 向量检索完成，命中 %d 条，耗时 %.3fs", len(retrieved_results), step3_elapsed)
 
     # STEP 3.5 — Rerank (only when enabled and candidates > final top_k)
     rerank_elapsed = 0.0
-    if reranker_enabled and len(retrieved_results) > top_k:
+    if reranker_enabled and len(retrieved_results) > final_top_k:
         step35_start = time.perf_counter()
         logger.info("[RAG][STEP 3.5] Rerank 开始")
-        reranker = get_reranker()
-        documents_for_rerank = [doc for doc, _score in retrieved_results]
-        retrieved_results = reranker.rerank(
-            query=retrieval_query,
-            documents=documents_for_rerank,
-            top_k=top_k,
+        retrieved_results = _rerank_results(
+            retrieval_query,
+            retrieved_results,
+            final_top_k,
         )
         rerank_elapsed = time.perf_counter() - step35_start
+        stage_timings["rerank"] = rerank_elapsed
         logger.info("[RAG][STEP 3.5] Rerank 完成，保留 %d 条，耗时 %.3fs", len(retrieved_results), rerank_elapsed)
 
     documents = [document for document, _score in retrieved_results]
+    generation_context_start = time.perf_counter()
     context_plan = prepare_generation_context(
         question=question,
         memory=memory,
         documents=documents,
     )
+    stage_timings["generation_context"] = (
+        time.perf_counter() - generation_context_start
+    )
     retrieved_results = retrieved_results[:context_plan.included_document_count]
 
     # STEP 4+5 — Generate answer
+    generation_start = time.perf_counter()
     answer = generate_answer(
         question=question,
         documents=context_plan.documents,
         history=context_plan.history,
         conversation_summary=context_plan.summary,
     )
+    stage_timings["generation"] = time.perf_counter() - generation_start
 
     # STEP 6 — Assemble response
     step6_start = time.perf_counter()
@@ -208,20 +351,20 @@ def query_rag(
     )
     logger.info("[RAG][STEP 6] 返回结果完成，耗时 %.3fs", time.perf_counter() - step6_start)
 
-    # Async logging (non-blocking)
-    threading.Thread(
-        target=log_rag_query,
-        args=(question, retrieval_query, processed["intent"],
-              retrieved_results, answer, top_k),
-        daemon=True,
-    ).start()
-
-    # Persist conversation (non-blocking, best-effort)
-    threading.Thread(
-        target=_save_exchange_safe,
-        args=(conversation_id, question, answer, sources, routing),
-        daemon=True,
-    ).start()
+    stage_timings["total"] = time.perf_counter() - total_start
+    _schedule_completed_query(
+        conversation_id=conversation_id,
+        turn_id=turn_id,
+        question=question,
+        answer=answer,
+        sources=sources,
+        routing=routing,
+        rewritten_query=retrieval_query,
+        intent=processed["intent"],
+        retrieved_results=retrieved_results,
+        top_k=final_top_k,
+        stage_timings=stage_timings,
+    )
 
     return response
 
@@ -241,112 +384,236 @@ async def query_rag_stream(
     conversation_id: str | None = None,
     history: list | None = None,
     force_rag: bool = False,
+    turn_id: str | None = None,
 ):
     """Async generator that yields SSE-formatted events for streaming RAG responses."""
+    total_start = time.perf_counter()
+    stage_timings: dict[str, float] = {}
     history = history or []
     conversation_id = conversation_id or uuid.uuid4().hex[:12]
+    turn_id = turn_id or uuid.uuid4().hex
+
+    # Context restoration reads SQLite and tokenizes text, so keep it off the
+    # event loop along with the explicitly blocking model/retrieval phases.
+    context_start = time.perf_counter()
     try:
-        memory = resolve_conversation_memory(conversation_id, history)
-        routing_memory = prepare_routing_memory(
+        memory = await asyncio.to_thread(
+            resolve_conversation_memory,
+            conversation_id,
+            history,
+        )
+        routing_memory = await asyncio.to_thread(
+            prepare_routing_memory,
             question,
             memory,
             QUERY_PROCESSING_SYSTEM_PROMPT,
         )
+        stage_timings["context"] = time.perf_counter() - context_start
+    except asyncio.CancelledError:
+        logger.info(
+            "SSE request cancelled during context phase conversation=%s",
+            conversation_id,
+        )
+        raise
     except ContextWindowExceededError as exc:
-        yield _sse_event("error", {"message": str(exc), "phase": "context"})
+        yield _stream_context_limit_error(exc, conversation_id)
+        yield _sse_event("done", {})
+        return
+    except Exception as exc:
+        logger.exception(
+            "SSE context preparation failed conversation=%s",
+            conversation_id,
+        )
+        yield _stream_error("context", conversation_id)
         yield _sse_event("done", {})
         return
 
     # STEP 2 — Query processing + routing
-    processed = process_query(
-        question,
-        history=routing_memory.messages,
-        conversation_summary=routing_memory.summary,
-    )
-    needs_rag = processed["needs_rag"] or force_rag
-    routing = "rag" if needs_rag else ("greeting" if processed["intent"] == "chitchat" else "direct")
+    routing_start = time.perf_counter()
+    try:
+        processed = await asyncio.to_thread(
+            process_query,
+            question,
+            history=routing_memory.messages,
+            conversation_summary=routing_memory.summary,
+        )
+        stage_timings["routing"] = time.perf_counter() - routing_start
+    except asyncio.CancelledError:
+        logger.info(
+            "SSE request cancelled during routing phase conversation=%s",
+            conversation_id,
+        )
+        raise
+    except Exception as exc:
+        logger.exception("SSE routing failed conversation=%s", conversation_id)
+        yield _stream_error("routing", conversation_id)
+        yield _sse_event("done", {})
+        return
+
+    try:
+        if not isinstance(processed, dict):
+            raise TypeError("routing result must be a dictionary")
+        needs_rag = processed["needs_rag"] or force_rag
+        intent = processed.get("intent", "unknown")
+        routing = "rag" if needs_rag else (
+            "greeting" if intent == "chitchat" else "direct"
+        )
+    except Exception as exc:
+        logger.exception(
+            "SSE routing result was invalid conversation=%s",
+            conversation_id,
+        )
+        yield _stream_error("routing", conversation_id)
+        yield _sse_event("done", {})
+        return
 
     # Yield routing event
     yield _sse_event("routing", {"routing": routing, "conversation_id": conversation_id})
 
-    # Non-RAG path — stream direct answer word-by-word for typing effect
+    # Non-RAG path — stream direct answer in small, whitespace-preserving chunks
     if not needs_rag:
         answer = processed.get("direct_answer") or "I'm not sure how to help with that."
         yield _sse_event("status", {"phase": "responding", "message": "Preparing response..."})
-        # Stream answer word-by-word so the frontend renders progressively
-        words = answer.split()
-        for i, word in enumerate(words):
-            token = word + (" " if i < len(words) - 1 else "")
-            yield _sse_event("token", token)
-            await asyncio.sleep(0)  # yield event loop so ASGI flushes each chunk
+
+        try:
+            # Preserve newlines, repeated spaces, and languages without spaces.
+            for token in _iter_text_chunks(answer):
+                yield _sse_event("token", token)
+                await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            logger.info(
+                "SSE request cancelled while responding conversation=%s",
+                conversation_id,
+            )
+            raise
+
+        stage_timings["total"] = time.perf_counter() - total_start
+        _schedule_completed_query(
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            question=question,
+            answer=answer,
+            sources=[],
+            routing=routing,
+            rewritten_query=processed.get("rewritten_query") or question,
+            intent=intent,
+            retrieved_results=[],
+            top_k=top_k,
+            stage_timings=stage_timings,
+        )
         yield _sse_event("sources", [])
         yield _sse_event("done", {})
-        threading.Thread(
-            target=log_rag_query,
-            args=(question, processed.get("rewritten_query", question),
-                  processed["intent"], [], answer, top_k),
-            daemon=True,
-        ).start()
-        threading.Thread(
-            target=_save_exchange_safe,
-            args=(conversation_id, question, answer, [], routing),
-            daemon=True,
-        ).start()
         return
 
     # RAG path — retrieve and stream
-    retrieval_query = processed["rewritten_query"] or question
+    retrieval_query = processed.get("rewritten_query") or question
 
     # Decide retrieval size: wider fetch for rerank, narrow otherwise
     reranker_enabled = settings.reranker_type.lower() not in ("none", "")
-    retrieval_k = settings.reranker_candidate_top_n if reranker_enabled else top_k
+    final_top_k = settings.reranker_final_top_k if reranker_enabled else top_k
+    retrieval_k = (
+        settings.reranker_candidate_top_n
+        if reranker_enabled
+        else final_top_k
+    )
 
     yield _sse_event("status", {"phase": "searching", "message": "Searching documents..."})
 
     step3_start = time.perf_counter()
     logger.info("[RAG][STREAM][STEP 3] 向量检索开始 (retrieval_k=%d, reranker=%s)", retrieval_k, settings.reranker_type)
-    retrieved_results = retrieve_relevant_documents(
-        question=retrieval_query,
-        top_k=retrieval_k,
-    )
+    try:
+        retrieved_results = await asyncio.to_thread(
+            retrieve_relevant_documents,
+            question=retrieval_query,
+            top_k=retrieval_k,
+        )
+        retrieved_results = list(retrieved_results)
+    except asyncio.CancelledError:
+        logger.info(
+            "SSE request cancelled during retrieval conversation=%s",
+            conversation_id,
+        )
+        raise
+    except Exception as exc:
+        logger.exception("SSE retrieval failed conversation=%s", conversation_id)
+        yield _stream_error("retrieval", conversation_id)
+        yield _sse_event("done", {})
+        return
+
     step3_elapsed = time.perf_counter() - step3_start
+    stage_timings["retrieval"] = step3_elapsed
     logger.info("[RAG][STREAM][STEP 3] 向量检索完成，命中 %d 条，耗时 %.3fs", len(retrieved_results), step3_elapsed)
 
     # STEP 3.5 — Rerank
     rerank_elapsed = 0.0
-    if reranker_enabled and len(retrieved_results) > top_k:
+    if reranker_enabled and len(retrieved_results) > final_top_k:
         yield _sse_event("status", {"phase": "reranking", "message": "Reranking results..."})
         step35_start = time.perf_counter()
         logger.info("[RAG][STREAM][STEP 3.5] Rerank 开始")
-        reranker = get_reranker()
-        documents_for_rerank = [doc for doc, _score in retrieved_results]
-        retrieved_results = reranker.rerank(
-            query=retrieval_query,
-            documents=documents_for_rerank,
-            top_k=top_k,
-        )
+        try:
+            retrieved_results = await asyncio.to_thread(
+                _rerank_results,
+                retrieval_query,
+                retrieved_results,
+                final_top_k,
+            )
+            retrieved_results = list(retrieved_results)
+        except asyncio.CancelledError:
+            logger.info(
+                "SSE request cancelled during rerank conversation=%s",
+                conversation_id,
+            )
+            raise
+        except Exception as exc:
+            logger.exception("SSE rerank failed conversation=%s", conversation_id)
+            yield _stream_error("rerank", conversation_id)
+            yield _sse_event("done", {})
+            return
+
         rerank_elapsed = time.perf_counter() - step35_start
+        stage_timings["rerank"] = rerank_elapsed
         logger.info("[RAG][STREAM][STEP 3.5] Rerank 完成，保留 %d 条，耗时 %.3fs", len(retrieved_results), rerank_elapsed)
 
-    documents = [document for document, _score in retrieved_results]
+    generation_context_start = time.perf_counter()
     try:
-        context_plan = prepare_generation_context(
+        documents = [document for document, _score in retrieved_results]
+        context_plan = await asyncio.to_thread(
+            prepare_generation_context,
             question=question,
             memory=memory,
             documents=documents,
         )
+        stage_timings["generation_context"] = (
+            time.perf_counter() - generation_context_start
+        )
+        retrieved_results = retrieved_results[
+            :context_plan.included_document_count
+        ]
+        sources = _build_sources(retrieved_results)
+    except asyncio.CancelledError:
+        logger.info(
+            "SSE request cancelled during generation context conversation=%s",
+            conversation_id,
+        )
+        raise
     except ContextWindowExceededError as exc:
-        yield _sse_event("error", {"message": str(exc), "phase": "context"})
+        yield _stream_context_limit_error(exc, conversation_id)
         yield _sse_event("done", {})
         return
-
-    retrieved_results = retrieved_results[:context_plan.included_document_count]
-    sources = _build_sources(retrieved_results)
+    except Exception as exc:
+        logger.exception(
+            "SSE generation context failed conversation=%s",
+            conversation_id,
+        )
+        yield _stream_error("context", conversation_id)
+        yield _sse_event("done", {})
+        return
 
     yield _sse_event("status", {"phase": "generating", "message": "Generating answer..."})
 
     # Stream tokens from LLM
     full_answer = ""
+    generation_start = time.perf_counter()
     try:
         async for token in generate_answer_stream(
             question=question,
@@ -356,26 +623,38 @@ async def query_rag_stream(
         ):
             full_answer += token
             yield _sse_event("token", token)
+    except asyncio.CancelledError:
+        logger.info(
+            "SSE request cancelled during generation conversation=%s",
+            conversation_id,
+        )
+        raise
     except Exception as exc:
-        logger.exception("LLM streaming failed mid-stream")
-        yield _sse_event("error", {"message": f"Generation failed: {exc}", "phase": "generating"})
-        full_answer += f"\n\n[Error: {exc}]"
+        logger.exception(
+            "LLM streaming failed mid-stream conversation=%s",
+            conversation_id,
+        )
+        yield _stream_error("generation", conversation_id)
+        yield _sse_event("done", {})
+        return
 
-    # Yield sources + done
+    stage_timings["generation"] = time.perf_counter() - generation_start
+    stage_timings["total"] = time.perf_counter() - total_start
+    _schedule_completed_query(
+        conversation_id=conversation_id,
+        turn_id=turn_id,
+        question=question,
+        answer=full_answer,
+        sources=sources,
+        routing=routing,
+        rewritten_query=retrieval_query,
+        intent=intent,
+        retrieved_results=retrieved_results,
+        top_k=final_top_k,
+        stage_timings=stage_timings,
+    )
+
+    # Only successfully completed answers produce sources, persistence, and a
+    # normal terminal event. Failed/cancelled streams never save partial text.
     yield _sse_event("sources", [s.model_dump() for s in sources])
     yield _sse_event("done", {})
-
-    # Async logging
-    threading.Thread(
-        target=log_rag_query,
-        args=(question, retrieval_query, processed["intent"],
-              retrieved_results, full_answer, top_k),
-        daemon=True,
-    ).start()
-
-    # Persist conversation (non-blocking, best-effort)
-    threading.Thread(
-        target=_save_exchange_safe,
-        args=(conversation_id, question, full_answer, sources, routing),
-        daemon=True,
-    ).start()

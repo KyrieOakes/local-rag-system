@@ -21,7 +21,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -34,7 +36,15 @@ if str(ROOT_DIR) not in sys.path:
 
 from app.core.config import settings
 from app.rag.query_processor import process_query
-from app.rag.reranker import CrossEncoderReranker, HybridFusionReranker
+from app.rag.ingestion.ingest_pipeline import (
+    SPLITTER_VERSION,
+    build_pipeline_fingerprint,
+)
+from app.rag.reranker import (
+    CrossEncoderReranker,
+    HybridFusionReranker,
+    build_rerank_candidates,
+)
 from app.rag.retriever import retrieve_relevant_documents
 from evaluation.retrieval_metrics.evaluator import evaluate_retrieval_case
 from evaluation.retrieval_metrics.matching import (
@@ -45,6 +55,7 @@ from evaluation.retrieval_metrics.matching import (
 
 def main() -> None:
     args = _parse_args()
+    _validate_args(args)
     examples = _load_jsonl(args.dataset)
 
     # Build reranker if enabled
@@ -53,7 +64,11 @@ def main() -> None:
     per_question = []
     for example in examples:
         question = example["question"]
-        retrieval_query = process_query(question)["rewritten_query"] if args.use_query_processor else question
+        retrieval_query = (
+            process_query(question)["rewritten_query"] or question
+            if args.use_query_processor
+            else question
+        )
 
         # Retrieve: wider fetch if reranker is active
         retrieval_k = args.rerank_top_n if args.use_reranker else args.top_k
@@ -61,10 +76,9 @@ def main() -> None:
 
         # Rerank: narrow down to final top_k
         if args.use_reranker and len(retrieved_results) > args.top_k:
-            documents_for_rerank = [doc for doc, _score in retrieved_results]
             retrieved_results = reranker.rerank(
                 query=retrieval_query,
-                documents=documents_for_rerank,
+                candidates=build_rerank_candidates(retrieved_results),
                 top_k=args.top_k,
             )
 
@@ -139,6 +153,19 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _validate_args(args: argparse.Namespace) -> None:
+    """Reject experiment configurations whose metrics would be meaningless."""
+    if args.top_k <= 0:
+        raise ValueError("--top-k must be greater than zero")
+    if args.rerank_top_n <= 0:
+        raise ValueError("--rerank-top-n must be greater than zero")
+    if args.use_reranker and args.rerank_top_n < args.top_k:
+        raise ValueError(
+            "--rerank-top-n must be greater than or equal to --top-k "
+            "when reranking is enabled"
+        )
+
+
 def _load_jsonl(path: str) -> list[dict[str, Any]]:
     dataset_path = Path(path)
     records = []
@@ -169,9 +196,14 @@ def _build_reranker(args: argparse.Namespace):
 
 def _build_report(args: argparse.Namespace, per_question: list[dict[str, Any]]) -> dict[str, Any]:
     aggregate = _aggregate_evaluations(per_question)
+    settings_snapshot = _build_settings_snapshot(args)
 
     report: dict[str, Any] = {
+        # Kept at v1 so existing notebook/report readers continue to load the
+        # additive report shape. metric_semantics_version identifies the fixed
+        # evidence-label denominator used by newly generated reports.
         "report_schema": "retrieval-eval-v1",
+        "metric_semantics_version": "evidence-label-v2",
         "experiment_name": args.experiment_name,
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "evaluation_layer": "retrieval",
@@ -182,12 +214,11 @@ def _build_report(args: argparse.Namespace, per_question: list[dict[str, Any]]) 
             "core_metrics": ["recall@k", "precision@k", "mrr", "ndcg@k"],
             "context_quality": ["context_redundancy@k", "irrelevant_rate@k", "duplicate_rate@k"],
         },
-        "settings_snapshot": {
-            "qdrant_collection": settings.qdrant_collection,
-            "chunk_size": settings.chunk_size,
-            "chunk_overlap": settings.chunk_overlap,
-            "embedding_model": settings.embedding_model,
-        },
+        "settings_snapshot": settings_snapshot,
+        "provenance": _build_provenance(
+            dataset_path=Path(args.dataset),
+            settings_snapshot=settings_snapshot,
+        ),
         "aggregate": aggregate,
         "questions": per_question,
     }
@@ -201,9 +232,107 @@ def _build_report(args: argparse.Namespace, per_question: list[dict[str, Any]]) 
             "final_top_k": args.top_k,
             "max_chars": settings.reranker_max_chars,
             "device": settings.reranker_device,
+            "trust_remote_code": getattr(
+                settings,
+                "reranker_trust_remote_code",
+                False,
+            ),
         }
 
     return report
+
+
+def _build_settings_snapshot(args: argparse.Namespace) -> dict[str, Any]:
+    """Capture every setting that changes retrieval/rerank experiment semantics."""
+    snapshot: dict[str, Any] = {
+        "schema_version": "retrieval-settings-v1",
+        "qdrant_collection": settings.qdrant_collection,
+        "chunk_size": settings.chunk_size,
+        "chunk_overlap": settings.chunk_overlap,
+        "embedding_model": settings.embedding_model,
+        "embedding_revision": settings.embedding_revision,
+        "splitter_version": SPLITTER_VERSION,
+        "pipeline_fingerprint": build_pipeline_fingerprint(
+            settings.qdrant_collection
+        ),
+        "distance_metric": "cosine",
+        "top_k": args.top_k,
+        "use_query_processor": args.use_query_processor,
+        "use_reranker": args.use_reranker,
+    }
+    if args.use_query_processor:
+        snapshot["query_processor"] = {
+            "provider": settings.llm_provider,
+            "model": (
+                settings.cloud_llm_model
+                if settings.llm_provider == "cloud"
+                else settings.llm_model
+            ),
+        }
+    if args.use_reranker:
+        snapshot["reranker"] = {
+            "type": args.reranker_type,
+            "model": settings.reranker_model,
+            "candidate_top_n": args.rerank_top_n,
+            "final_top_k": args.top_k,
+            "max_chars": settings.reranker_max_chars,
+            "device": settings.reranker_device,
+            "trust_remote_code": getattr(
+                settings,
+                "reranker_trust_remote_code",
+                False,
+            ),
+            "hybrid_alpha": 0.7 if args.reranker_type == "hybrid" else None,
+        }
+    return snapshot
+
+
+def _build_provenance(
+    dataset_path: Path,
+    settings_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    """Build reproducibility metadata without making report generation fragile."""
+    git_sha = _run_git_command("rev-parse", "HEAD")
+    git_status = _run_git_command("status", "--porcelain")
+    settings_payload = json.dumps(
+        settings_snapshot,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        "schema_version": "retrieval-provenance-v1",
+        "dataset_sha256": _sha256_file(dataset_path),
+        "git_sha": git_sha,
+        "git_dirty": bool(git_status) if git_status is not None else None,
+        "settings_fingerprint": (
+            "sha256:" + hashlib.sha256(settings_payload).hexdigest()
+        ),
+    }
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _run_git_command(*args: str) -> str | None:
+    """Return git output when available; provenance must not block evaluation."""
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=ROOT_DIR,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip()
 
 
 def _aggregate_evaluations(per_question: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
