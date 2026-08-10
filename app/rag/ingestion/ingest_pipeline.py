@@ -14,6 +14,7 @@ import logging
 import threading
 import time
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -78,7 +79,19 @@ def build_pipeline_fingerprint(collection_name: str) -> str:
             "chunk_overlap": settings.chunk_overlap,
             "splitter_version": SPLITTER_VERSION,
         },
+        "index": {
+            "schema": settings.retrieval_index_schema,
+        },
     }
+    if settings.retrieval_index_schema == "hybrid":
+        payload["index"].update({
+            "schema_version": "dense-bm25-v1",
+            "dense_vector_name": settings.dense_vector_name,
+            "sparse_vector_name": settings.sparse_vector_name,
+            "bm25_model": settings.bm25_model,
+            "bm25_tokenizer": settings.bm25_tokenizer,
+            "bm25_language": settings.bm25_language,
+        })
     serialized = json.dumps(
         payload,
         ensure_ascii=False,
@@ -222,7 +235,7 @@ def _source_for_path(
         or source_map.get(str(canonical_path))
         or raw_path.name
     )
-    source = Path(str(source)).name
+    source = unicodedata.normalize("NFC", str(source)).replace("\\", "/")
     if not source:
         raise ValueError(f"Unable to determine original filename for {raw_path}")
     return source
@@ -537,12 +550,21 @@ def ingest_file_paths(
     *,
     origin: str = "file",
     scan_root: str | None = None,
+    max_workers: int = 1,
+    continue_on_error: bool = False,
 ) -> dict[str, Any]:
     """Ingest explicit paths and return backward-compatible aggregate fields."""
     if not file_paths:
         return {"status": "no_files", "files_processed": 0, "chunks": 0}
     if batch_size <= 0:
         raise ValueError("batch_size must be greater than zero")
+    if max_workers <= 0:
+        raise ValueError("max_workers must be greater than zero")
+    if max_workers > 1 and not continue_on_error:
+        raise ValueError(
+            "Concurrent ingestion requires continue_on_error=True so partial "
+            "commits remain explicit"
+        )
 
     collection = collection_name or settings.qdrant_collection
     store = ChecksumStore()
@@ -554,26 +576,58 @@ def ingest_file_paths(
         else ""
     )
 
+    def ingest_path(path_text: str) -> dict[str, Any]:
+        raw_path = Path(path_text)
+        canonical = _canonical_path(raw_path)
+        source = _source_for_path(raw_path, canonical, source_map)
+        try:
+            return _ingest_one(
+                raw_path,
+                collection_name=collection,
+                batch_size=batch_size,
+                source=source,
+                origin=normalized_origin,
+                scan_root=normalized_root,
+                store=store,
+            )
+        except Exception as error:
+            if not continue_on_error:
+                raise
+            logger.exception("Failed to ingest %s", source)
+            return {
+                "status": "error",
+                "change_type": None,
+                "document_id": None,
+                "source": source,
+                "stored_path": str(canonical),
+                "chunks": 0,
+                "cleanup_pending": False,
+                "error_type": type(error).__name__,
+            }
+
     with _ingestion_lock:
         _retry_pending_cleanups(store, collection)
-        for path_text in file_paths:
-            raw_path = Path(path_text)
-            canonical = _canonical_path(raw_path)
-            source = _source_for_path(raw_path, canonical, source_map)
-            results.append(
-                _ingest_one(
-                    raw_path,
-                    collection_name=collection,
-                    batch_size=batch_size,
-                    source=source,
-                    origin=normalized_origin,
-                    scan_root=normalized_root,
-                    store=store,
-                )
-            )
+        worker_count = min(max_workers, len(file_paths))
+        if worker_count == 1:
+            results = [ingest_path(path_text) for path_text in file_paths]
+        else:
+            # The outer ingestion lock excludes other lifecycle operations,
+            # while this bounded pool lets independent files load/embed/upsert
+            # concurrently. Results remain in request order.
+            with ThreadPoolExecutor(
+                max_workers=worker_count,
+                thread_name_prefix="document-ingestion",
+            ) as executor:
+                results = list(executor.map(ingest_path, file_paths))
 
     indexed = [result for result in results if result["status"] == "indexed"]
-    aggregate_status = "indexed" if indexed else "up_to_date"
+    errors = [result for result in results if result["status"] == "error"]
+    if errors and len(errors) == len(results):
+        aggregate_status = "error"
+    elif errors:
+        aggregate_status = "partial"
+    else:
+        aggregate_status = "indexed" if indexed else "up_to_date"
     response: dict[str, Any] = {
         "status": aggregate_status,
         "files_processed": len(indexed),

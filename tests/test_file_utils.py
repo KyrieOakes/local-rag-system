@@ -13,12 +13,41 @@ from fastapi import UploadFile
 
 from app.utils.file_utils import (
     UploadTooLargeError,
+    normalize_upload_relative_path,
     remove_upload_file,
     save_upload_file,
 )
 
 
 class UploadFileUtilsTest(unittest.IsolatedAsyncioTestCase):
+    def test_folder_relative_path_is_normalized_and_preserved(self):
+        self.assertEqual(
+            normalize_upload_relative_path(
+                "project\\backend\\README.md",
+                original_filename="README.md",
+            ),
+            "project/backend/README.md",
+        )
+
+    def test_folder_relative_path_rejects_traversal(self):
+        with self.assertRaisesRegex(ValueError, "unsafe segment"):
+            normalize_upload_relative_path(
+                "project/../README.md",
+                original_filename="README.md",
+            )
+        with self.assertRaisesRegex(ValueError, "drive prefix"):
+            normalize_upload_relative_path(
+                "C:project/README.md",
+                original_filename="README.md",
+            )
+
+    def test_folder_relative_path_must_match_uploaded_basename(self):
+        with self.assertRaisesRegex(ValueError, "uploaded filename"):
+            normalize_upload_relative_path(
+                "project/other.md",
+                original_filename="README.md",
+            )
+
     async def test_streamed_upload_is_saved_under_uuid_name(self):
         with tempfile.TemporaryDirectory() as temp_dir, patch(
             "app.utils.file_utils.UPLOAD_DIR",

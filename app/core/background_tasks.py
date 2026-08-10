@@ -1,9 +1,8 @@
-"""Bounded background execution for best-effort post-response work.
+"""Bounded background execution for best-effort query trace writes.
 
-The RAG service uses this module for query logging, conversation persistence,
-and memory compaction.  A fixed-size executor avoids creating two daemon
-threads per request, while the semaphore keeps the executor's otherwise
-unbounded work queue under control.
+Conversation persistence and memory compaction have their own durable path;
+this executor keeps non-critical JSONL work from creating an unbounded number
+of threads or queued callables.
 """
 
 from __future__ import annotations
@@ -121,7 +120,7 @@ def submit_background_task(
     *args: Any,
     **kwargs: Any,
 ) -> Future | None:
-    """Submit post-response work to the shared bounded executor."""
+    """Submit non-critical work to the shared bounded executor."""
     return get_background_executor().submit(function, *args, **kwargs)
 
 

@@ -6,7 +6,7 @@
  * - 侧边栏：系统状态、上传文档入口、文档管理入口
  * - 上传面板（模态框）：支持多文件选择、上传前预览、上传后结果展示
  * - 文档管理面板（模态框）：按文件类型分组列出已索引文档，支持逐个删除
- * - 聊天区：用户消息+AI 回复气泡，Markdown 渲染，来源块展示检索分数
+ * - 聊天区：用户消息+AI 回复气泡、Markdown、真实 Pipeline 进度和来源标签
  * - 输入区：Enter 发送，Shift+Enter 换行，流式加载动画
  *
  * 交互细节：
@@ -14,7 +14,7 @@
  * - 模态框点击外部或按 Escape 关闭
  * - 欢迎页提供示例提示词，点击自动填入输入框
  * - 上传按钮有 300ms 展开动画
- * - 来源分数直接显示数值；不同检索/Rerank 策略的分数不使用统一高低阈值
+ * - 来源按文档聚合为轻量标签；检索分数仅保留在 API/日志中用于调试与评估
  */
 import { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
@@ -28,7 +28,121 @@ import {
   getConversation,
   deleteConversation,
 } from "./api";
+import {
+  collectDroppedEntries,
+  collectInputEntries,
+  prepareUploadEntries,
+} from "./folderUpload";
+import {
+  groupSourceTags,
+  markProgressError,
+  phaseLabel,
+  pipelineElapsedMs,
+  upsertProgressStep,
+} from "./streamPresentation";
 import "./App.css";
+
+function formatPipelineElapsed(milliseconds) {
+  if (!Number.isFinite(milliseconds)) return "";
+  if (milliseconds < 1000) return `${milliseconds} ms`;
+  return `${(milliseconds / 1000).toFixed(1)} s`;
+}
+
+function PipelineProgress({ steps = [], streaming = false }) {
+  if (steps.length === 0) return null;
+  const elapsed = pipelineElapsedMs(steps);
+  const hasError = steps.some((step) => step.state === "error");
+  const hasWarning = steps.some((step) => step.state === "warning");
+  const body = (
+    <div className="pipeline-steps">
+      {steps.map((step) => (
+        <div
+          className={`pipeline-step ${step.state}`}
+          key={step.phase}
+        >
+          <span className="pipeline-step-marker" aria-hidden="true">
+            {step.state === "completed"
+              ? "✓"
+              : step.state === "skipped"
+                ? "–"
+                : step.state === "error"
+                  ? "!"
+                  : step.state === "warning"
+                    ? "!"
+                  : ""}
+          </span>
+          <div className="pipeline-step-copy">
+            <div className="pipeline-step-line">
+              <span>{phaseLabel(step.phase)}</span>
+              <span>{step.message}</span>
+              {step.elapsedMs !== null && (
+                <time>{formatPipelineElapsed(step.elapsedMs)}</time>
+              )}
+            </div>
+            {step.detail && <div className="pipeline-step-detail">{step.detail}</div>}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+
+  if (streaming || hasError || hasWarning) {
+    return (
+      <div
+        className={`pipeline-progress live${hasError ? " failed" : ""}${hasWarning && !hasError ? " warning" : ""}`}
+        aria-live="polite"
+      >
+        <div className="pipeline-live-title">
+          <span className="pipeline-live-dot"></span>
+          {hasError
+            ? "The RAG pipeline stopped"
+            : hasWarning
+              ? "Answer ready with a warning"
+              : "Working through the RAG pipeline"}
+        </div>
+        {body}
+      </div>
+    );
+  }
+
+  return (
+    <details className="pipeline-progress completed">
+      <summary>
+        Pipeline details
+        {elapsed !== null && <span>{formatPipelineElapsed(elapsed)}</span>}
+      </summary>
+      {body}
+    </details>
+  );
+}
+
+function SourceTags({ sources = [] }) {
+  const tags = groupSourceTags(sources);
+  if (tags.length === 0) return null;
+  return (
+    <div className="message-source-tags">
+      <span className="source-tags-label">Sources</span>
+      {tags.map((source) => (
+        <span className="source-tag" key={source.key} title={source.title}>
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            aria-hidden="true"
+          >
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+          </svg>
+          <span>{source.label}</span>
+          {source.meta && <small>{source.meta}</small>}
+        </span>
+      ))}
+    </div>
+  );
+}
 
 function App() {
   const [healthStatus, setHealthStatus] = useState("idle");
@@ -43,7 +157,11 @@ function App() {
   const [showSidebar, setShowSidebar] = useState(false);
 
   const [files, setFiles] = useState([]);
+  const [skippedFiles, setSkippedFiles] = useState([]);
   const [loadingUpload, setLoadingUpload] = useState(false);
+  const [scanningFiles, setScanningFiles] = useState(false);
+  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(null);
   const [uploadMsg, setUploadMsg] = useState(null);
   const [uploadResults, setUploadResults] = useState(null);
   const [showUploadPanel, setShowUploadPanel] = useState(false);
@@ -60,6 +178,8 @@ function App() {
 
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
+  const folderInputRef = useRef(null);
+  const dragDepthRef = useRef(0);
   const uploadBtnRef = useRef(null);
   const uploadPanelRef = useRef(null);
   const docMgrPanelRef = useRef(null);
@@ -132,6 +252,8 @@ function App() {
           sources: m.sources || [],
           routing: m.routing || null,
           loading: false,
+          streaming: false,
+          progressSteps: [],
         }))
       );
     } catch (err) {
@@ -220,6 +342,11 @@ function App() {
     setShowUploadPanel(false);
     setUploadMsg(null);
     setFiles([]);
+    setSkippedFiles([]);
+    setScanningFiles(false);
+    setIsDraggingFiles(false);
+    setUploadProgress(null);
+    dragDepthRef.current = 0;
     setUploadResults(null);
   }
 
@@ -321,7 +448,8 @@ function App() {
         sources: [],
         routing: null,
         loading: true,
-        statusText: null,
+        streaming: true,
+        progressSteps: [],
       },
     ]);
 
@@ -353,10 +481,18 @@ function App() {
               )
             );
           },
-          onStatus({ message }) {
+          onStatus(status) {
             setMessages((prev) =>
               prev.map((msg) =>
-                msg.id === placeholderId ? { ...msg, statusText: message } : msg
+                msg.id === placeholderId
+                  ? {
+                      ...msg,
+                      progressSteps: upsertProgressStep(
+                        msg.progressSteps,
+                        status,
+                      ),
+                    }
+                  : msg
               )
             );
           },
@@ -366,7 +502,11 @@ function App() {
               const firstToken = msg?.loading && msg.content === "";
               return prev.map((m) =>
                 m.id === placeholderId
-                  ? { ...m, content: m.content + token, loading: !firstToken ? m.loading : false }
+                  ? {
+                      ...m,
+                      content: m.content + token,
+                      loading: !firstToken ? m.loading : false,
+                    }
                   : m
               );
             });
@@ -380,22 +520,46 @@ function App() {
               )
             );
           },
-          onDone() {
+          onDone({ conversation_persisted: conversationPersisted = true } = {}) {
             setMessages((prev) =>
               prev.map((msg) =>
-                msg.id === placeholderId && msg.loading
-                  ? { ...msg, loading: false }
+                msg.id === placeholderId
+                  ? {
+                      ...msg,
+                      loading: false,
+                      streaming: false,
+                      conversationPersisted,
+                      progressSteps: conversationPersisted
+                        ? msg.progressSteps
+                        : upsertProgressStep(msg.progressSteps, {
+                            phase: "finalizing",
+                            state: "warning",
+                            message: "Answer ready, but conversation history was not saved",
+                            detail: "Copy the answer and retry the question.",
+                          }),
+                    }
                   : msg
               )
             );
             setLoadingQuery(false);
-            loadConversationList();
+            if (conversationPersisted) loadConversationList();
           },
-          onError({ message }) {
+          onError({ message, phase }) {
             setMessages((prev) =>
               prev.map((msg) =>
                 msg.id === placeholderId
-                  ? { ...msg, loading: false, statusText: null, routing: "error" }
+                  ? {
+                      ...msg,
+                      content: msg.content || message,
+                      loading: false,
+                      streaming: false,
+                      routing: "error",
+                      progressSteps: markProgressError(
+                        msg.progressSteps,
+                        phase,
+                        message,
+                      ),
+                    }
                   : msg
               )
             );
@@ -417,7 +581,14 @@ function App() {
                 sources: wasCancelled ? msg.sources : [],
                 routing: wasCancelled ? msg.routing : "error",
                 loading: false,
-                statusText: null,
+                streaming: false,
+                progressSteps: wasCancelled
+                  ? msg.progressSteps
+                  : markProgressError(
+                      msg.progressSteps,
+                      "network",
+                      err.message || "Streaming connection failed",
+                    ),
               }
             : msg
         )
@@ -453,15 +624,95 @@ function App() {
     }
   }
 
+  function addUploadEntries(entries) {
+    const { accepted, skipped } = prepareUploadEntries(entries, files);
+    if (accepted.length > 0) {
+      setFiles((previous) => [...previous, ...accepted]);
+    }
+    if (skipped.length > 0) {
+      setSkippedFiles((previous) => [...previous, ...skipped]);
+    }
+
+    setUploadResults(null);
+    setUploadProgress(null);
+    if (skipped.length > 0) {
+      setUploadMsg({
+        type: accepted.length > 0 || files.length > 0 ? "partial" : "error",
+        text: `${accepted.length} accepted, ${skipped.length} ignored.`,
+      });
+    } else if (accepted.length > 0) {
+      setUploadMsg(null);
+    }
+  }
+
+  function handleSelectedFiles(event) {
+    const entries = collectInputEntries(event.target.files);
+    if (entries.length > 0) addUploadEntries(entries);
+    event.target.value = "";
+  }
+
+  function handleUploadDragEnter(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current += 1;
+    setIsDraggingFiles(true);
+  }
+
+  function handleUploadDragOver(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "copy";
+  }
+
+  function handleUploadDragLeave(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setIsDraggingFiles(false);
+  }
+
+  async function handleUploadDrop(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current = 0;
+    setIsDraggingFiles(false);
+    if (scanningFiles || loadingUpload) return;
+
+    setScanningFiles(true);
+    setUploadMsg({ type: "partial", text: "Scanning dropped folder…" });
+    try {
+      const entries = await collectDroppedEntries(event.dataTransfer);
+      addUploadEntries(entries);
+      if (entries.length === 0) {
+        setUploadMsg({
+          type: "error",
+          text: "No files were found in the dropped items.",
+        });
+      }
+    } catch (error) {
+      console.error("Failed to scan dropped folder:", error);
+      setUploadMsg({
+        type: "error",
+        text: "The dropped folder could not be read by this browser.",
+      });
+    } finally {
+      setScanningFiles(false);
+    }
+  }
+
   async function handleUpload() {
     if (files.length === 0 || loadingUpload) return;
 
     setLoadingUpload(true);
     setUploadMsg(null);
     setUploadResults(null);
+    setUploadProgress({ completed: 0, total: files.length });
 
     try {
-      const data = await uploadDocuments(files);
+      const data = await uploadDocuments(files, {
+        batchSize: 20,
+        onProgress: setUploadProgress,
+      });
       const results = data.results;
 
       setUploadResults(results);
@@ -474,6 +725,7 @@ function App() {
       const cleanupPending = results.filter(
         (r) => r.cleanup_pending
       ).length;
+      const ignored = skippedFiles.length;
 
       if (failed === 0) {
         const summary = [
@@ -482,6 +734,7 @@ function App() {
           cleanupPending > 0
             ? `${cleanupPending} old-version cleanup pending`
             : null,
+          ignored > 0 ? `${ignored} ignored before upload` : null,
         ]
           .filter(Boolean)
           .join(", ");
@@ -497,13 +750,15 @@ function App() {
       } else {
         setUploadMsg({
           type: "partial",
-          text: `${indexed} indexed, ${upToDate} already up to date, ${failed} failed, ${cleanupPending} cleanup pending.`,
+          text: `${indexed} indexed, ${upToDate} already up to date, ${failed} failed, ${ignored} ignored, ${cleanupPending} cleanup pending.`,
         });
       }
     } catch (err) {
+      const partialResults = err.uploadResults || [];
+      if (partialResults.length > 0) setUploadResults(partialResults);
       setUploadMsg({
         type: "error",
-        text: `Upload failed: ${
+        text: `Upload stopped after ${partialResults.length}/${files.length}: ${
           err.response?.data?.detail || "Unknown error"
         }`,
       });
@@ -551,11 +806,6 @@ function App() {
         <polyline points="13 2 13 9 20 9"></polyline>
       </svg>
     );
-  }
-
-  function formatRetrievalScore(score) {
-    const value = Number(score);
-    return Number.isFinite(value) ? value.toFixed(3) : "N/A";
   }
 
   function formatConvTime(timestamp) {
@@ -747,8 +997,13 @@ function App() {
             </div>
 
             <div
-              className={`modal-upload-area ${files.length > 0 ? "has-files" : ""}`}
-              onClick={() => fileInputRef.current?.click()}
+              className={`modal-upload-area ${files.length > 0 ? "has-files" : ""} ${
+                isDraggingFiles ? "is-dragging" : ""
+              }`}
+              onDragEnter={handleUploadDragEnter}
+              onDragOver={handleUploadDragOver}
+              onDragLeave={handleUploadDragLeave}
+              onDrop={handleUploadDrop}
             >
               <input
                 ref={fileInputRef}
@@ -756,77 +1011,87 @@ function App() {
                 accept=".pdf,.txt,.md,.markdown,.docx"
                 multiple
                 style={{ display: "none" }}
-                onChange={(e) => {
-                  const selected = Array.from(e.target.files || []);
-                  if (selected.length > 0) {
-                    setFiles((prev) => [...prev, ...selected]);
-                    setUploadMsg(null);
-                    setUploadResults(null);
-                  }
-                  e.target.value = "";
-                }}
+                disabled={scanningFiles || loadingUpload}
+                onChange={handleSelectedFiles}
+              />
+              <input
+                ref={folderInputRef}
+                type="file"
+                multiple
+                webkitdirectory=""
+                directory=""
+                style={{ display: "none" }}
+                disabled={scanningFiles || loadingUpload}
+                onChange={handleSelectedFiles}
               />
 
-              {files.length > 0 ? (
-                <div className="modal-upload-add-more">
-                  <svg
-                    width="20"
-                    height="20"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                  >
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                    <polyline points="17 8 12 3 7 8"></polyline>
-                    <line x1="12" y1="3" x2="12" y2="15"></line>
-                  </svg>
-                  <span>Click to add more files</span>
-                </div>
-              ) : (
-                <>
-                  <svg
-                    width="32"
-                    height="32"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                  >
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                    <polyline points="17 8 12 3 7 8"></polyline>
-                    <line x1="12" y1="3" x2="12" y2="15"></line>
-                  </svg>
-                  <p className="modal-upload-text">Click to choose files</p>
-                  <p className="modal-upload-hint">
-                    PDF, TXT, Markdown, and DOCX files are supported. Multiple files allowed.
-                  </p>
-                </>
-              )}
+              <svg
+                width="32"
+                height="32"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+              >
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="17 8 12 3 7 8"></polyline>
+                <line x1="12" y1="3" x2="12" y2="15"></line>
+              </svg>
+              <p className="modal-upload-text">
+                {scanningFiles
+                  ? "Scanning folder…"
+                  : isDraggingFiles
+                    ? "Release to scan recursively"
+                    : "Drop files or a folder here"}
+              </p>
+              <div className="modal-upload-pickers">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={scanningFiles || loadingUpload}
+                >
+                  Choose files
+                </button>
+                <button
+                  type="button"
+                  onClick={() => folderInputRef.current?.click()}
+                  disabled={scanningFiles || loadingUpload}
+                >
+                  Choose folder
+                </button>
+              </div>
+              <p className="modal-upload-hint">
+                Supported files are added recursively; unsupported files are ignored.
+              </p>
             </div>
 
             {files.length > 0 && (
               <div className="modal-file-list">
-                {files.map((f, idx) => {
-                  const result = getFileResult(f.name);
+                {files.map((entry, idx) => {
+                  const result = getFileResult(entry.relativePath);
                   const resultSucceeded =
                     result && result.status !== "error";
                   return (
                     <div
-                      key={`${f.name}-${idx}`}
+                      key={entry.relativePath}
                       className={`modal-file-row${
                         result ? resultSucceeded ? " success" : " error" : ""
                       }`}
                     >
                       <span className="modal-file-row-icon">
                         {fileTypeIcon(
-                          f.name.slice(f.name.lastIndexOf("."))
+                          entry.file.name.slice(entry.file.name.lastIndexOf("."))
                         )}
                       </span>
                       <div className="modal-file-row-info">
-                        <p className="modal-file-row-name">{f.name}</p>
+                        <p
+                          className="modal-file-row-name"
+                          title={entry.relativePath}
+                        >
+                          {entry.relativePath}
+                        </p>
                         <p className="modal-file-row-size">
-                          {(f.size / 1024).toFixed(1)} KB
+                          {(entry.file.size / 1024).toFixed(1)} KB
                         </p>
                       </div>
                       {result ? (
@@ -867,6 +1132,26 @@ function App() {
               </div>
             )}
 
+            {skippedFiles.length > 0 && (
+              <div className="modal-skipped-files">
+                <div className="modal-skipped-header">
+                  <span>{skippedFiles.length} ignored</span>
+                  <span>Unsupported, system, unsafe, or duplicate paths</span>
+                </div>
+                <div className="modal-skipped-list">
+                  {skippedFiles.slice(0, 8).map((item, index) => (
+                    <div key={`${item.relativePath}-${index}`}>
+                      <span title={item.relativePath}>{item.relativePath}</span>
+                      <span>{item.reason}</span>
+                    </div>
+                  ))}
+                  {skippedFiles.length > 8 && (
+                    <p>+ {skippedFiles.length - 8} more ignored files</p>
+                  )}
+                </div>
+              </div>
+            )}
+
             <button
               className="modal-upload-btn"
               onClick={handleUpload}
@@ -875,7 +1160,8 @@ function App() {
               {loadingUpload ? (
                 <span className="modal-btn-loading">
                   <span className="modal-loader"></span>
-                  Uploading...
+                  Uploading {uploadProgress?.completed || 0}/
+                  {uploadProgress?.total || files.length}
                 </span>
               ) : files.length > 0 ? (
                 `Upload & Index ${files.length} File${
@@ -1169,16 +1455,20 @@ function App() {
               </div>
 
               <div className="message-content">
-                {msg.loading ? (
-                  <div>
+                {msg.role === "assistant" && (
+                  <PipelineProgress
+                    steps={msg.progressSteps}
+                    streaming={msg.streaming}
+                  />
+                )}
+
+                {msg.loading && !msg.content ? (
+                  <div className="message-waiting">
                     <div className="typing-indicator">
                       <span></span>
                       <span></span>
                       <span></span>
                     </div>
-                    {msg.statusText && (
-                      <div className="stream-status">{msg.statusText}</div>
-                    )}
                   </div>
                 ) : (
                   <>
@@ -1204,47 +1494,7 @@ function App() {
                       </div>
                     )}
 
-                    {msg.sources && msg.sources.length > 0 && (
-                      <div className="message-sources">
-                        <div className="sources-bar">
-                          <svg
-                            width="14"
-                            height="14"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                          >
-                            <circle cx="12" cy="12" r="10"></circle>
-                            <line x1="12" y1="16" x2="12" y2="12"></line>
-                            <line x1="12" y1="8" x2="12.01" y2="8"></line>
-                          </svg>
-                          {msg.sources.length} source
-                          {msg.sources.length > 1 ? "s" : ""} retrieved
-                        </div>
-
-                        <div className="sources-list">
-                          {msg.sources.map((source, sourceIndex) => (
-                            <div className="source-chip" key={sourceIndex}>
-                              <span className="source-label">
-                                {source.source ||
-                                  source.filename ||
-                                  `Source ${sourceIndex + 1}`}
-                              </span>
-
-                              {source.score != null && (
-                                <span
-                                  className="source-score"
-                                  title="Strategy-specific retrieval/rerank score"
-                                >
-                                  Score {formatRetrievalScore(source.score)}
-                                </span>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                    <SourceTags sources={msg.sources} />
                   </>
                 )}
               </div>

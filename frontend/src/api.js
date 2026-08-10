@@ -4,7 +4,7 @@
  * 封装所有与 FastAPI 后端的 HTTP 请求：
  * - healthCheck() — GET /health，检查后端在线状态
  * - uploadDocument(file) — POST /documents/upload，上传单个文件
- * - uploadDocuments(files) — POST /documents/upload-batch，批量上传文件
+ * - uploadDocuments(entries) — 分批调用 POST /documents/upload-batch，上传文件及相对路径
  * - queryRag({question, conversationId, history, forceRag}) — POST /rag/query，发送 RAG 查询
  * - listDocuments() — GET /documents，列出已索引文档
  * - deleteDocument(identifier) — DELETE /documents/{document_id_or_source}，删除文档
@@ -42,19 +42,41 @@ export async function uploadDocument(file) {
   return res.data;
 }
 
-export async function uploadDocuments(files) {
-  const formData = new FormData();
-  for (const file of files) {
-    formData.append('files', file);
+export async function uploadDocuments(entries, { batchSize = 20, onProgress } = {}) {
+  const candidates = entries.map((entry) => (
+    entry.file
+      ? entry
+      : { file: entry, relativePath: entry.webkitRelativePath || entry.name }
+  ));
+  const results = [];
+
+  for (let offset = 0; offset < candidates.length; offset += batchSize) {
+    const batch = candidates.slice(offset, offset + batchSize);
+    const formData = new FormData();
+    for (const entry of batch) {
+      formData.append('files', entry.file);
+      formData.append('relative_paths', entry.relativePath);
+    }
+
+    try {
+      const res = await api.post('/documents/upload-batch', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+      results.push(...res.data.results);
+    } catch (error) {
+      error.uploadResults = [...results];
+      throw error;
+    }
+
+    onProgress?.({
+      completed: Math.min(offset + batch.length, candidates.length),
+      total: candidates.length,
+    });
   }
 
-  const res = await api.post('/documents/upload-batch', formData, {
-    headers: {
-      'Content-Type': 'multipart/form-data',
-    },
-  });
-
-  return res.data;
+  return { results };
 }
 
 export async function queryRag({ question, conversationId, history, forceRag }) {
@@ -102,10 +124,10 @@ export async function deleteConversation(conversationId) {
  * @param {boolean} params.forceRag
  * @param {Object} callbacks
  * @param {function} callbacks.onRouting - ({routing, conversation_id}) => void
- * @param {function} callbacks.onStatus - ({phase, message}) => void
+ * @param {function} callbacks.onStatus - ({phase, state, message, elapsed_ms, detail, metadata}) => void
  * @param {function} callbacks.onToken - (token: string) => void
  * @param {function} callbacks.onSources - (sources: Array) => void
- * @param {function} callbacks.onDone - () => void
+ * @param {function} callbacks.onDone - ({elapsed_ms, conversation_persisted}) => void
  * @param {function} callbacks.onError - ({message, phase}) => void
  */
 export async function queryRagStream(
@@ -173,7 +195,7 @@ export async function queryRagStream(
                 callbacks.onSources?.(parsed);
                 break;
               case 'done':
-                callbacks.onDone?.();
+                callbacks.onDone?.(parsed);
                 break;
               case 'error':
                 callbacks.onError?.(parsed);

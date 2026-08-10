@@ -5,8 +5,9 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
+from app.core.config import settings
 from app.main import app
-from app.services.ingestion_service import ingest_document
+from app.services.ingestion_service import ingest_document, ingest_documents
 from app.utils.file_utils import UploadTooLargeError
 
 
@@ -90,14 +91,16 @@ class DocumentsApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 413)
         self.assertIn("10-byte", response.json()["detail"])
 
-    @patch("app.api.documents.ingest_document")
+    @patch("app.api.documents.ingest_documents")
     @patch("app.api.documents.save_upload_file", new_callable=AsyncMock)
     def test_batch_upload_reports_partial_failure(self, save_upload_mock, ingest_mock):
         save_upload_mock.side_effect = [
             "data/raw/first.md",
             ValueError("Unsupported file type: .exe"),
         ]
-        ingest_mock.return_value = {"status": "indexed", "chunks": 2}
+        ingest_mock.return_value = [
+            {"filename": "first.md", "status": "indexed", "chunks": 2}
+        ]
 
         response = self.client.post(
             "/documents/upload-batch",
@@ -113,9 +116,161 @@ class DocumentsApiTest(unittest.TestCase):
         self.assertEqual(results[1]["status"], "error")
         self.assertEqual(results[1]["filename"], "second.exe")
         ingest_mock.assert_called_once_with(
-            file_path="data/raw/first.md",
-            original_filename="first.md",
+            [
+                {
+                    "index": 0,
+                    "file_path": "data/raw/first.md",
+                    "original_filename": "first.md",
+                    "relative_path": "first.md",
+                }
+            ]
         )
+
+    @patch("app.api.documents.ingest_documents")
+    @patch("app.api.documents.save_upload_file", new_callable=AsyncMock)
+    def test_batch_upload_preserves_relative_paths_for_same_basename(
+        self,
+        save_upload_mock,
+        ingest_mock,
+    ):
+        save_upload_mock.side_effect = [
+            "data/raw/backend.md",
+            "data/raw/frontend.md",
+        ]
+        ingest_mock.return_value = [
+            {
+                "filename": "project/backend/README.md",
+                "source": "project/backend/README.md",
+                "status": "indexed",
+                "chunks": 2,
+            },
+            {
+                "filename": "project/frontend/README.md",
+                "source": "project/frontend/README.md",
+                "status": "indexed",
+                "chunks": 3,
+            },
+        ]
+
+        response = self.client.post(
+            "/documents/upload-batch",
+            data={
+                "relative_paths": [
+                    "project/backend/README.md",
+                    "project/frontend/README.md",
+                ]
+            },
+            files=[
+                ("files", ("README.md", b"# Backend", "text/markdown")),
+                ("files", ("README.md", b"# Frontend", "text/markdown")),
+            ],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [item["filename"] for item in response.json()["results"]],
+            ["project/backend/README.md", "project/frontend/README.md"],
+        )
+        ingest_mock.assert_called_once_with(
+            [
+                {
+                    "index": 0,
+                    "file_path": "data/raw/backend.md",
+                    "original_filename": "README.md",
+                    "relative_path": "project/backend/README.md",
+                },
+                {
+                    "index": 1,
+                    "file_path": "data/raw/frontend.md",
+                    "original_filename": "README.md",
+                    "relative_path": "project/frontend/README.md",
+                },
+            ]
+        )
+
+    @patch("app.api.documents.ingest_documents")
+    @patch("app.api.documents.save_upload_file", new_callable=AsyncMock)
+    def test_batch_upload_rejects_unsafe_path_but_continues_other_files(
+        self,
+        save_upload_mock,
+        ingest_mock,
+    ):
+        save_upload_mock.return_value = "data/raw/safe.md"
+        ingest_mock.return_value = [
+            {
+                "filename": "folder/safe.md",
+                "source": "folder/safe.md",
+                "status": "indexed",
+                "chunks": 1,
+            }
+        ]
+
+        response = self.client.post(
+            "/documents/upload-batch",
+            data={"relative_paths": ["../secret.md", "folder/safe.md"]},
+            files=[
+                ("files", ("secret.md", b"bad path", "text/markdown")),
+                ("files", ("safe.md", b"# Safe", "text/markdown")),
+            ],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        results = response.json()["results"]
+        self.assertEqual(results[0]["status"], "error")
+        self.assertIn("unsafe", results[0]["error"])
+        self.assertEqual(results[1]["status"], "indexed")
+        save_upload_mock.assert_awaited_once()
+        ingest_mock.assert_called_once_with(
+            [
+                {
+                    "index": 1,
+                    "file_path": "data/raw/safe.md",
+                    "original_filename": "safe.md",
+                    "relative_path": "folder/safe.md",
+                }
+            ]
+        )
+
+    @patch("app.api.documents.ingest_documents")
+    @patch("app.api.documents.save_upload_file", new_callable=AsyncMock)
+    def test_batch_upload_rejects_duplicate_logical_paths(
+        self,
+        save_upload_mock,
+        ingest_mock,
+    ):
+        save_upload_mock.return_value = "data/raw/first.md"
+        ingest_mock.return_value = [
+            {"filename": "docs/guide.md", "status": "indexed", "chunks": 1}
+        ]
+
+        response = self.client.post(
+            "/documents/upload-batch",
+            data={"relative_paths": ["docs/guide.md", "docs/guide.md"]},
+            files=[
+                ("files", ("guide.md", b"first", "text/markdown")),
+                ("files", ("guide.md", b"second", "text/markdown")),
+            ],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        results = response.json()["results"]
+        self.assertEqual(results[0]["status"], "indexed")
+        self.assertEqual(results[1]["status"], "error")
+        self.assertIn("Duplicate", results[1]["error"])
+        save_upload_mock.assert_awaited_once()
+
+    def test_batch_upload_rejects_misaligned_relative_path_manifest(self):
+        response = self.client.post(
+            "/documents/upload-batch",
+            data={"relative_paths": ["one.md"]},
+            files=[
+                ("files", ("one.md", b"one", "text/markdown")),
+                ("files", ("two.md", b"two", "text/markdown")),
+            ],
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("one entry for every file", response.json()["detail"])
 
     @patch("app.api.documents.list_documents")
     def test_list_documents_returns_service_result(self, list_documents_mock):
@@ -200,6 +355,68 @@ class DocumentsApiTest(unittest.TestCase):
 
 class IngestionServiceResponseTest(unittest.TestCase):
     @patch("app.services.ingestion_service.ingest_file_paths")
+    def test_upload_batch_enables_bounded_parallel_ingestion(
+        self,
+        ingest_paths_mock,
+    ):
+        ingest_paths_mock.return_value = {
+            "status": "indexed",
+            "documents": [
+                {
+                    "status": "indexed",
+                    "change_type": "new",
+                    "document_id": "doc-one",
+                    "source": "root/one.md",
+                    "chunks": 1,
+                    "cleanup_pending": False,
+                },
+                {
+                    "status": "indexed",
+                    "change_type": "new",
+                    "document_id": "doc-two",
+                    "source": "root/two.md",
+                    "chunks": 2,
+                    "cleanup_pending": False,
+                },
+            ],
+        }
+
+        results = ingest_documents(
+            [
+                {
+                    "file_path": "/private/data/raw/one.md",
+                    "original_filename": "one.md",
+                    "relative_path": "root/one.md",
+                },
+                {
+                    "file_path": "/private/data/raw/two.md",
+                    "original_filename": "two.md",
+                    "relative_path": "root/two.md",
+                },
+            ]
+        )
+
+        self.assertEqual([result["document_id"] for result in results], [
+            "doc-one",
+            "doc-two",
+        ])
+        ingest_paths_mock.assert_called_once_with(
+            file_paths=[
+                "/private/data/raw/one.md",
+                "/private/data/raw/two.md",
+            ],
+            collection_name=None,
+            batch_size=settings.embedding_batch_size,
+            source_map={
+                "/private/data/raw/one.md": "root/one.md",
+                "/private/data/raw/two.md": "root/two.md",
+            },
+            origin="upload",
+            max_workers=settings.upload_ingestion_concurrency,
+            continue_on_error=True,
+        )
+
+    @patch("app.services.ingestion_service.ingest_file_paths")
     def test_upload_response_exposes_identity_but_not_internal_path(
         self,
         ingest_paths_mock,
@@ -235,6 +452,50 @@ class IngestionServiceResponseTest(unittest.TestCase):
                 "change_type": "new",
                 "cleanup_pending": False,
             },
+        )
+        ingest_paths_mock.assert_called_once_with(
+            file_paths=["/private/data/raw/uuid.md"],
+            collection_name=None,
+            batch_size=settings.embedding_batch_size,
+            source_map={"/private/data/raw/uuid.md": "guide.md"},
+            origin="upload",
+        )
+
+    @patch("app.services.ingestion_service.ingest_file_paths")
+    def test_folder_upload_uses_relative_path_as_logical_source(
+        self,
+        ingest_paths_mock,
+    ):
+        ingest_paths_mock.return_value = {
+            "status": "indexed",
+            "documents": [
+                {
+                    "status": "indexed",
+                    "change_type": "new",
+                    "document_id": "doc-backend",
+                    "source": "project/backend/README.md",
+                    "chunks": 2,
+                    "cleanup_pending": False,
+                }
+            ],
+        }
+
+        result = ingest_document(
+            "/private/data/raw/uuid.md",
+            "README.md",
+            relative_path="project/backend/README.md",
+        )
+
+        self.assertEqual(result["filename"], "project/backend/README.md")
+        self.assertEqual(result["source"], "project/backend/README.md")
+        ingest_paths_mock.assert_called_once_with(
+            file_paths=["/private/data/raw/uuid.md"],
+            collection_name=None,
+            batch_size=settings.embedding_batch_size,
+            source_map={
+                "/private/data/raw/uuid.md": "project/backend/README.md"
+            },
+            origin="upload",
         )
 
 

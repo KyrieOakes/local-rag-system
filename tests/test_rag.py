@@ -238,7 +238,11 @@ class RagServiceTopKTest(unittest.TestCase):
                 return_value="answer",
             ),
             patch(
-                "app.services.rag_service._schedule_completed_query"
+                "app.services.rag_service._persist_completed_exchange",
+                return_value=True,
+            ),
+            patch(
+                "app.services.rag_service._schedule_query_trace"
             ) as schedule_mock,
             patch.object(rag_service.settings, "reranker_type", "cross_encoder"),
             patch.object(rag_service.settings, "reranker_candidate_top_n", 11),
@@ -276,7 +280,11 @@ class RagStreamReliabilityTest(unittest.IsolatedAsyncioTestCase):
                 return_value=routing_memory,
             ),
             patch("app.services.rag_service.process_query", return_value=processed),
-            patch("app.services.rag_service._schedule_completed_query"),
+            patch(
+                "app.services.rag_service._persist_completed_exchange",
+                return_value=True,
+            ),
+            patch("app.services.rag_service._schedule_query_trace"),
         ):
             chunks = await _collect_stream(
                 question="直接回答",
@@ -292,6 +300,49 @@ class RagStreamReliabilityTest(unittest.IsolatedAsyncioTestCase):
             len([name for name, _payload in events if name == "token"]),
             1,
         )
+
+    async def test_persistence_failure_keeps_answer_and_emits_warning(self):
+        routing_memory = SimpleNamespace(messages=[], summary="")
+        processed = {
+            "needs_rag": False,
+            "intent": "chitchat",
+            "rewritten_query": None,
+            "direct_answer": "completed answer",
+        }
+        with (
+            patch(
+                "app.services.rag_service.resolve_conversation_memory",
+                return_value=object(),
+            ),
+            patch(
+                "app.services.rag_service.prepare_routing_memory",
+                return_value=routing_memory,
+            ),
+            patch("app.services.rag_service.process_query", return_value=processed),
+            patch(
+                "app.services.rag_service._persist_completed_exchange",
+                return_value=False,
+            ),
+            patch("app.services.rag_service._schedule_query_trace"),
+        ):
+            chunks = await _collect_stream(
+                question="direct answer",
+                conversation_id="c1",
+            )
+
+        events = _parse_sse_events(chunks)
+        self.assertEqual(
+            "".join(payload for name, payload in events if name == "token"),
+            "completed answer",
+        )
+        final_status = [
+            payload
+            for name, payload in events
+            if name == "status" and payload["phase"] == "finalizing"
+        ][-1]
+        self.assertEqual(final_status["state"], "warning")
+        self.assertFalse(events[-1][1]["conversation_persisted"])
+        self.assertNotIn("error", [name for name, _payload in events])
 
     async def test_routing_failure_emits_generic_error_then_done(self):
         routing_memory = SimpleNamespace(messages=[], summary="")
@@ -315,9 +366,18 @@ class RagStreamReliabilityTest(unittest.IsolatedAsyncioTestCase):
             )
 
         events = _parse_sse_events(chunks)
-        self.assertEqual([name for name, _data in events], ["error", "done"])
-        self.assertEqual(events[0][1]["phase"], "routing")
-        self.assertEqual(events[0][1]["message"], "Unable to route the request.")
+        self.assertEqual(events[-2][0], "error")
+        self.assertEqual(events[-1][0], "done")
+        self.assertEqual(events[-2][1]["phase"], "routing")
+        self.assertEqual(
+            events[-2][1]["message"],
+            "Unable to route the request.",
+        )
+        statuses = [payload for name, payload in events if name == "status"]
+        self.assertEqual(statuses[0]["phase"], "memory")
+        self.assertEqual(statuses[0]["state"], "running")
+        self.assertEqual(statuses[-1]["phase"], "routing")
+        self.assertEqual(statuses[-1]["state"], "running")
         self.assertNotIn("internal-model", json.dumps(events))
 
     async def test_retrieval_failure_emits_error_then_done(self):
@@ -350,16 +410,98 @@ class RagStreamReliabilityTest(unittest.IsolatedAsyncioTestCase):
             )
 
         events = _parse_sse_events(chunks)
-        self.assertEqual(
-            [name for name, _data in events],
-            ["routing", "status", "error", "done"],
-        )
+        self.assertEqual(events[-2][0], "error")
+        self.assertEqual(events[-1][0], "done")
         self.assertEqual(events[-2][1]["phase"], "retrieval")
         self.assertEqual(
             events[-2][1]["message"],
             "Unable to retrieve relevant documents.",
         )
         self.assertNotIn("/private/vector/database", json.dumps(events))
+
+    async def test_successful_stream_reports_factual_pipeline_progress(self):
+        routing_memory = SimpleNamespace(messages=[], summary="")
+        processed = {
+            "needs_rag": True,
+            "intent": "question_answering",
+            "rewritten_query": "rewritten query",
+            "direct_answer": None,
+        }
+        retrieved = [
+            (
+                Document(
+                    page_content="evidence",
+                    metadata={"source": "guide.md", "chunk_index": 0},
+                ),
+                0.9,
+            )
+        ]
+        context_plan = SimpleNamespace(
+            documents=[retrieved[0][0]],
+            history=[],
+            summary="",
+            included_document_count=1,
+            input_tokens=123,
+            dropped_documents=0,
+        )
+
+        async def generation(**_kwargs):
+            yield "answer"
+
+        with (
+            patch(
+                "app.services.rag_service.resolve_conversation_memory",
+                return_value=object(),
+            ),
+            patch(
+                "app.services.rag_service.prepare_routing_memory",
+                return_value=routing_memory,
+            ),
+            patch("app.services.rag_service.process_query", return_value=processed),
+            patch(
+                "app.services.rag_service.retrieve_relevant_documents",
+                return_value=retrieved,
+            ),
+            patch(
+                "app.services.rag_service.prepare_generation_context",
+                return_value=context_plan,
+            ),
+            patch("app.services.rag_service.generate_answer_stream", generation),
+            patch(
+                "app.services.rag_service._persist_completed_exchange",
+                return_value=True,
+            ),
+            patch("app.services.rag_service._schedule_query_trace"),
+            patch.object(rag_service.settings, "reranker_type", "none"),
+            patch.object(rag_service.settings, "retrieval_mode", "hybrid"),
+            patch.object(rag_service.settings, "hybrid_fusion", "rrf"),
+        ):
+            chunks = await _collect_stream(
+                question="original query",
+                conversation_id="c1",
+            )
+
+        events = _parse_sse_events(chunks)
+        statuses = [payload for name, payload in events if name == "status"]
+        by_phase = {}
+        for status in statuses:
+            by_phase.setdefault(status["phase"], []).append(status)
+
+        self.assertEqual(by_phase["memory"][-1]["state"], "completed")
+        self.assertEqual(by_phase["routing"][-1]["state"], "completed")
+        self.assertIn("rewritten query", by_phase["routing"][-1]["detail"])
+        self.assertEqual(
+            by_phase["retrieval"][-1]["metadata"]["retrieved_candidates"],
+            1,
+        )
+        self.assertEqual(
+            by_phase["context"][-1]["metadata"]["input_tokens"],
+            123,
+        )
+        self.assertEqual(by_phase["generation"][-1]["state"], "completed")
+        self.assertEqual(by_phase["finalizing"][-1]["state"], "completed")
+        self.assertEqual(events[-1][0], "done")
+        self.assertIn("elapsed_ms", events[-1][1])
 
     async def test_rerank_failure_emits_error_then_done(self):
         routing_memory = SimpleNamespace(messages=[], summary="")
@@ -447,7 +589,10 @@ class RagStreamReliabilityTest(unittest.IsolatedAsyncioTestCase):
                 failing_generation,
             ),
             patch(
-                "app.services.rag_service._schedule_completed_query"
+                "app.services.rag_service._persist_completed_exchange"
+            ) as persistence_mock,
+            patch(
+                "app.services.rag_service._schedule_query_trace"
             ) as schedule_mock,
             patch.object(rag_service.settings, "reranker_type", "none"),
         ):
@@ -462,6 +607,7 @@ class RagStreamReliabilityTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[-1][0], "done")
         self.assertNotIn("http://secret", json.dumps(events))
         schedule_mock.assert_not_called()
+        persistence_mock.assert_not_called()
 
     async def test_generation_cancellation_does_not_persist_partial_answer(self):
         routing_memory = SimpleNamespace(messages=[], summary="")
@@ -505,7 +651,10 @@ class RagStreamReliabilityTest(unittest.IsolatedAsyncioTestCase):
                 cancelled_generation,
             ),
             patch(
-                "app.services.rag_service._schedule_completed_query"
+                "app.services.rag_service._persist_completed_exchange"
+            ) as persistence_mock,
+            patch(
+                "app.services.rag_service._schedule_query_trace"
             ) as schedule_mock,
             patch.object(rag_service.settings, "reranker_type", "none"),
         ):
@@ -516,6 +665,7 @@ class RagStreamReliabilityTest(unittest.IsolatedAsyncioTestCase):
                 )
 
         schedule_mock.assert_not_called()
+        persistence_mock.assert_not_called()
 
     async def test_blocking_pipeline_stages_run_through_to_thread(self):
         routing_memory = SimpleNamespace(messages=[], summary="")
@@ -574,9 +724,13 @@ class RagStreamReliabilityTest(unittest.IsolatedAsyncioTestCase):
                 "app.services.rag_service.generate_answer_stream",
                 successful_generation,
             ),
+            patch(
+                "app.services.rag_service._persist_completed_exchange",
+                return_value=True,
+            ) as persistence_mock,
             patch("app.services.rag_service.asyncio.to_thread", recording_to_thread),
             patch(
-                "app.services.rag_service._schedule_completed_query"
+                "app.services.rag_service._schedule_query_trace"
             ) as schedule_mock,
             patch.object(rag_service.settings, "reranker_type", "cross_encoder"),
             patch.object(rag_service.settings, "reranker_candidate_top_n", 20),
@@ -593,6 +747,7 @@ class RagStreamReliabilityTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(retrieval_mock, threaded_functions)
         self.assertIn(rerank_mock, threaded_functions)
         self.assertIn(generation_context_mock, threaded_functions)
+        self.assertIn(persistence_mock, threaded_functions)
         self.assertEqual(_parse_sse_events(chunks)[-1][0], "done")
         self.assertEqual(retrieval_mock.call_args.kwargs["top_k"], 20)
         self.assertEqual(rerank_mock.call_args.args[2], 3)

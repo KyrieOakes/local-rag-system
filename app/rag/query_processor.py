@@ -95,11 +95,24 @@ def _check_greeting(question: str) -> dict | None:
     return None
 
 
-def _format_history(history: list, conversation_summary: str = "") -> str:
-    """Format long-term summary and recent messages for prompt injection."""
+def _format_history(
+    history: list,
+    conversation_summary: str = "",
+    pending_history: list | None = None,
+) -> str:
+    """Format summary, pending compaction, and recent turns for routing."""
     sections = []
     if conversation_summary:
         sections.append(f"Earlier conversation summary:\n{conversation_summary}")
+
+    pending_lines = []
+    for msg in pending_history or []:
+        role_label = "User" if msg.role == "user" else "Assistant"
+        pending_lines.append(f"{role_label}: {msg.content}")
+    if pending_lines:
+        sections.append(
+            "Pending compaction conversation:\n" + "\n".join(pending_lines)
+        )
 
     lines = []
     for msg in history:
@@ -181,6 +194,7 @@ def process_query(
     question: str,
     history: list | None = None,
     conversation_summary: str = "",
+    pending_history: list | None = None,
 ) -> dict:
     """
     Process the user query — route, detect intent, rewrite or answer directly.
@@ -199,7 +213,11 @@ def process_query(
         llm = get_llm(max_tokens=settings.context_routing_output_tokens)
         chain = _query_processing_prompt | llm | StrOutputParser()
 
-        history_text = _format_history(history, conversation_summary)
+        history_text = _format_history(
+            history,
+            conversation_summary,
+            pending_history,
+        )
         if history_text:
             invoke_input = {
                 "question": f"Previous conversation:\n{history_text}\n\nCurrent question: {question}"

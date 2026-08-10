@@ -1,5 +1,5 @@
 """
-Reranker 模块 — 在向量检索后对候选文档进行精排序。
+Reranker 模块 — 在一阶检索后对候选文档进行精排序。
 
 架构：可插拔的抽象设计，通过配置切换不同策略。
   - NoOpReranker: 透传，不做 rerank（等同于禁用）
@@ -7,7 +7,7 @@ Reranker 模块 — 在向量检索后对候选文档进行精排序。
   - HybridFusionReranker: 向量分数 + 关键词分数加权融合（轻量 fallback，无额外模型）
 
 工作流：
-  1. Vector Search 召回 top_n 候选（如 20 条）
+  1. Dense、BM25 或 Hybrid Search 召回 top_n 候选（如 20 条）
   2. Reranker 对候选精排
   3. 取最终 top_k（如 5 条）送入 LLM
 
@@ -36,20 +36,25 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class RerankCandidate:
-    """A retrieved document together with its original vector-search score."""
+    """A retrieved document together with its first-stage retrieval score."""
 
     document: Document
-    vector_score: float
+    retrieval_score: float
+
+    @property
+    def vector_score(self) -> float:
+        """Backward-compatible alias for pre-hybrid callers and metadata."""
+        return self.retrieval_score
 
 
 def build_rerank_candidates(
     retrieved_results: Sequence[tuple[Document, float | None]],
 ) -> list[RerankCandidate]:
-    """Convert vector-search tuples into the explicit reranker input model."""
+    """Convert retrieval tuples into the explicit reranker input model."""
     return [
         RerankCandidate(
             document=document,
-            vector_score=float(score) if score is not None else 0.0,
+            retrieval_score=float(score) if score is not None else 0.0,
         )
         for document, score in retrieved_results
     ]
@@ -74,7 +79,7 @@ class BaseReranker(ABC):
 
         参数:
             query: 用户查询文本
-            candidates: Vector Search 召回的文档及其原始相似度分数
+            candidates: 一阶检索召回的文档及其原始分数
             top_k: 最终保留条数
 
         返回:
@@ -97,7 +102,7 @@ class NoOpReranker(BaseReranker):
         top_k: int,
     ) -> list[tuple[Document, float]]:
         _validate_top_k(top_k)
-        return _vector_only_results(candidates[:top_k], sort=False)
+        return _first_stage_results(candidates[:top_k], sort=False)
 
 
 # ---------------------------------------------------------------------------
@@ -114,9 +119,9 @@ class CrossEncoderReranker(BaseReranker):
 
     特性:
       - 懒加载：首次调用 rerank() 时才加载模型，避免服务启动阻塞
-      - Fallback: 模型加载失败时退回 vector-only 结果
+      - Fallback: 模型加载失败时退回一阶检索结果
       - 文档截断: 每个 doc 最多取前 max_chars 字符送入模型
-      - 元数据保持: 在 doc.metadata 中记录 vector_score 和 rerank_score
+      - 元数据保持: 在 doc.metadata 中记录 retrieval_score、兼容别名 vector_score 和 rerank_score
     """
 
     def __init__(
@@ -170,7 +175,7 @@ class CrossEncoderReranker(BaseReranker):
           2. 对每个 doc 截断文本（默认 1500 字符），构造 (query, doc_text) 对
           3. 模型批量预测相关性分数
           4. 按分数降序排序，保留 top_k
-          5. 在 metadata 中记录 vector_score 和 rerank_score
+          5. 在 metadata 中记录 retrieval_score、兼容别名 vector_score 和 rerank_score
         """
         _validate_top_k(top_k)
         if not candidates:
@@ -182,15 +187,15 @@ class CrossEncoderReranker(BaseReranker):
                 "[RERANK] 候选数 %d ≤ top_k=%d，跳过 rerank",
                 len(candidates), top_k,
             )
-            return _vector_only_results(candidates, sort=False)
+            return _first_stage_results(candidates, sort=False)
 
         try:
             self._load_model()
         except Exception:
             logger.warning(
-                "[RERANK] 模型加载失败，退回 vector-only 结果"
+                "[RERANK] 模型加载失败，退回一阶检索结果"
             )
-            return _fallback_vector_only(candidates, top_k)
+            return _fallback_first_stage(candidates, top_k)
 
         step_start = time.perf_counter()
 
@@ -213,16 +218,16 @@ class CrossEncoderReranker(BaseReranker):
                 )
         except Exception as exc:
             logger.warning(
-                "[RERANK] Cross-Encoder 预测失败，退回 vector-only 结果: %s", exc
+                "[RERANK] Cross-Encoder 预测失败，退回一阶检索结果: %s", exc
             )
-            return _fallback_vector_only(candidates, top_k)
+            return _fallback_first_stage(candidates, top_k)
 
         # 组装 (doc, vector_score, rerank_score)
         scored: list[dict] = []
         for candidate, score in zip(candidates, scores):
             scored.append({
                 "doc": candidate.document,
-                "vector_score": candidate.vector_score,
+                "retrieval_score": candidate.retrieval_score,
                 "rerank_score": float(score),
             })
 
@@ -233,7 +238,8 @@ class CrossEncoderReranker(BaseReranker):
         reranked: list[tuple[Document, float]] = []
         for item in scored[:top_k]:
             doc = item["doc"]
-            doc.metadata["vector_score"] = item["vector_score"]
+            doc.metadata["retrieval_score"] = item["retrieval_score"]
+            doc.metadata["vector_score"] = item["retrieval_score"]
             doc.metadata["rerank_score"] = item["rerank_score"]
             doc.metadata["score"] = item["rerank_score"]  # 更新为 rerank 分数
             reranked.append((doc, item["rerank_score"]))
@@ -276,12 +282,12 @@ class HybridFusionReranker(BaseReranker):
             return []
 
         if len(candidates) <= top_k:
-            return _vector_only_results(candidates, sort=False)
+            return _first_stage_results(candidates, sort=False)
 
         step_start = time.perf_counter()
 
         # 提取原始向量分数
-        vector_scores = [candidate.vector_score for candidate in candidates]
+        vector_scores = [candidate.retrieval_score for candidate in candidates]
 
         # Min-max 归一化到 [0, 1]
         v_min, v_max = min(vector_scores), max(vector_scores)
@@ -303,7 +309,7 @@ class HybridFusionReranker(BaseReranker):
             fused = self._alpha * nv + (1 - self._alpha) * kw
             scored.append({
                 "doc": candidate.document,
-                "vector_score": candidate.vector_score,
+                "retrieval_score": candidate.retrieval_score,
                 "keyword_score": kw,
                 "rerank_score": fused,
             })
@@ -313,7 +319,8 @@ class HybridFusionReranker(BaseReranker):
         reranked: list[tuple[Document, float]] = []
         for item in scored[:top_k]:
             doc = item["doc"]
-            doc.metadata["vector_score"] = item["vector_score"]
+            doc.metadata["retrieval_score"] = item["retrieval_score"]
+            doc.metadata["vector_score"] = item["retrieval_score"]
             doc.metadata["keyword_score"] = item["keyword_score"]
             doc.metadata["rerank_score"] = item["rerank_score"]
             doc.metadata["score"] = item["rerank_score"]
@@ -391,31 +398,32 @@ def _compute_keyword_scores(
     return scores
 
 
-def _fallback_vector_only(
+def _fallback_first_stage(
     candidates: Sequence[RerankCandidate],
     top_k: int,
 ) -> list[tuple[Document, float]]:
-    """退回 vector-only：按原始分数排序，保留 top_k。"""
+    """退回一阶检索：按原始分数排序，保留 top_k。"""
     _validate_top_k(top_k)
-    return _vector_only_results(candidates, sort=True)[:top_k]
+    return _first_stage_results(candidates, sort=True)[:top_k]
 
 
-def _vector_only_results(
+def _first_stage_results(
     candidates: Sequence[RerankCandidate],
     *,
     sort: bool,
 ) -> list[tuple[Document, float]]:
-    """Return candidates with their explicit vector scores and score metadata."""
+    """Return candidates with explicit first-stage scores and score metadata."""
     ordered = list(candidates)
     if sort:
-        ordered.sort(key=lambda candidate: candidate.vector_score, reverse=True)
+        ordered.sort(key=lambda candidate: candidate.retrieval_score, reverse=True)
 
     results = []
     for candidate in ordered:
         document = candidate.document
-        document.metadata["vector_score"] = candidate.vector_score
-        document.metadata["score"] = candidate.vector_score
-        results.append((document, candidate.vector_score))
+        document.metadata["retrieval_score"] = candidate.retrieval_score
+        document.metadata["vector_score"] = candidate.retrieval_score
+        document.metadata["score"] = candidate.retrieval_score
+        results.append((document, candidate.retrieval_score))
     return results
 
 

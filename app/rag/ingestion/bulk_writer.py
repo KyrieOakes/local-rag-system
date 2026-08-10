@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
 from typing import Any
 
@@ -12,11 +13,14 @@ from qdrant_client.models import (
     FieldCondition,
     Filter,
     MatchValue,
+    Modifier,
     PointStruct,
+    SparseVectorParams,
     VectorParams,
 )
 
 from app.core.config import settings
+from app.rag.bm25 import build_bm25_document
 from app.rag.ingestion.checksum_store import make_legacy_document_id
 
 logger = logging.getLogger(__name__)
@@ -24,6 +28,7 @@ logger = logging.getLogger(__name__)
 # Qdrant has a 32 MB payload limit per upsert call.
 UPSERT_BATCH_SIZE = 500
 POINT_ID_NAMESPACE = uuid.UUID("15ab3d6b-6638-41ae-a4d4-a786e43eaab7")
+_collection_schema_lock = threading.Lock()
 
 
 def _get_client() -> QdrantClient:
@@ -230,17 +235,109 @@ def _validate_chunks_and_embeddings(
 def _existing_collection_vector_size(
     client: QdrantClient,
     collection_name: str,
+    vector_name: str | None = None,
 ) -> int:
     collection = client.get_collection(collection_name=collection_name)
     vectors = collection.config.params.vectors
-    if hasattr(vectors, "size"):
+    if vector_name is None and hasattr(vectors, "size"):
         return int(vectors.size)
-    if isinstance(vectors, dict) and len(vectors) == 1:
+    if isinstance(vectors, dict) and vector_name in vectors:
+        vector_params = vectors[vector_name]
+        if hasattr(vector_params, "size"):
+            return int(vector_params.size)
+    if vector_name is None and isinstance(vectors, dict) and len(vectors) == 1:
         vector_params = next(iter(vectors.values()))
         if hasattr(vector_params, "size"):
             return int(vector_params.size)
     raise ValueError(
-        f"Collection '{collection_name}' uses an unsupported named-vector configuration"
+        f"Collection '{collection_name}' does not contain the expected "
+        f"dense vector {vector_name or '<unnamed>'!r}"
+    )
+
+
+def _validate_existing_collection_schema(
+    client: QdrantClient,
+    collection_name: str,
+    embedding_size: int,
+) -> None:
+    """Fail before point construction when the configured schema mismatches."""
+    vector_name = (
+        settings.dense_vector_name
+        if settings.retrieval_index_schema == "hybrid"
+        else None
+    )
+    collection_size = _existing_collection_vector_size(
+        client,
+        collection_name,
+        vector_name,
+    )
+    if collection_size != embedding_size:
+        raise ValueError(
+            f"Embedding dimension {embedding_size} does not match collection "
+            f"'{collection_name}' dimension {collection_size}; rebuild the collection "
+            "before switching embedding models"
+        )
+
+    if settings.retrieval_index_schema != "hybrid":
+        return
+
+    collection = client.get_collection(collection_name=collection_name)
+    sparse_vectors = getattr(collection.config.params, "sparse_vectors", None) or {}
+    sparse_params = sparse_vectors.get(settings.sparse_vector_name)
+    if sparse_params is None:
+        raise ValueError(
+            f"Collection '{collection_name}' does not contain the expected "
+            f"BM25 sparse vector {settings.sparse_vector_name!r}; reindex into "
+            "a hybrid collection"
+        )
+    modifier = getattr(sparse_params, "modifier", None)
+    if modifier not in {Modifier.IDF, Modifier.IDF.value}:
+        raise ValueError(
+            f"Collection '{collection_name}' sparse vector "
+            f"{settings.sparse_vector_name!r} must use the IDF modifier"
+        )
+
+
+def _create_collection(
+    client: QdrantClient,
+    collection_name: str,
+    embedding_size: int,
+) -> None:
+    if settings.retrieval_index_schema == "hybrid":
+        client.create_collection(
+            collection_name=collection_name,
+            vectors_config={
+                settings.dense_vector_name: VectorParams(
+                    size=embedding_size,
+                    distance=Distance.COSINE,
+                )
+            },
+            sparse_vectors_config={
+                settings.sparse_vector_name: SparseVectorParams(
+                    modifier=Modifier.IDF,
+                )
+            },
+        )
+        logger.info(
+            "Created hybrid collection '%s' (dense=%s/%d, sparse=%s/BM25)",
+            collection_name,
+            settings.dense_vector_name,
+            embedding_size,
+            settings.sparse_vector_name,
+        )
+        return
+
+    client.create_collection(
+        collection_name=collection_name,
+        vectors_config=VectorParams(
+            size=embedding_size,
+            distance=Distance.COSINE,
+        ),
+    )
+    logger.info(
+        "Created dense collection '%s' (vector_size=%d)",
+        collection_name,
+        embedding_size,
     )
 
 
@@ -260,27 +357,13 @@ def bulk_upsert_chunks(
     client = _get_client()
     collection = collection_name or settings.qdrant_collection
     embedding_size = len(embeddings[0])
-    if not client.collection_exists(collection_name=collection):
-        client.create_collection(
-            collection_name=collection,
-            vectors_config=VectorParams(
-                size=embedding_size,
-                distance=Distance.COSINE,
-            ),
-        )
-        logger.info(
-            "Created collection '%s' (vector_size=%d)",
-            collection,
-            embedding_size,
-        )
-    else:
-        collection_size = _existing_collection_vector_size(client, collection)
-        if collection_size != embedding_size:
-            raise ValueError(
-                f"Embedding dimension {embedding_size} does not match collection "
-                f"'{collection}' dimension {collection_size}; rebuild the collection "
-                "before switching embedding models"
-            )
+    # Multiple files may finish embedding together. Serialize the tiny
+    # create/validate section so the first upload cannot race collection setup.
+    with _collection_schema_lock:
+        if not client.collection_exists(collection_name=collection):
+            _create_collection(client, collection, embedding_size)
+        else:
+            _validate_existing_collection_schema(client, collection, embedding_size)
 
     points = []
     for chunk, embedding in zip(chunks, embeddings, strict=True):
@@ -290,10 +373,18 @@ def bulk_upsert_chunks(
             metadata["version_id"],
             metadata["chunk_index"],
         )
+        vector = embedding
+        if settings.retrieval_index_schema == "hybrid":
+            vector = {
+                settings.dense_vector_name: embedding,
+                settings.sparse_vector_name: build_bm25_document(
+                    chunk.page_content
+                ),
+            }
         points.append(
             PointStruct(
                 id=point_id,
-                vector=embedding,
+                vector=vector,
                 payload={
                     "page_content": chunk.page_content,
                     "metadata": metadata,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
+from app.core.config import settings
 from app.rag.ingestion.checksum_store import make_legacy_document_id
 from app.services.document_service import delete_document
 
@@ -23,6 +24,17 @@ def _registered_record(**overrides):
 
 
 class DocumentLifecycleServiceTest(unittest.TestCase):
+    def setUp(self):
+        self.collection_patcher = patch.object(
+            settings,
+            "qdrant_collection",
+            "local_rag_docs",
+        )
+        self.collection_patcher.start()
+
+    def tearDown(self):
+        self.collection_patcher.stop()
+
     @patch("app.services.document_service.remove_upload_file", return_value=True)
     @patch(
         "app.services.document_service.delete_chunks_by_document_id",

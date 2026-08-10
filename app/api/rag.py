@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 @router.on_event("shutdown")
 def shutdown_rag_background_tasks() -> None:
-    """Drain accepted query logging/persistence work during app shutdown."""
+    """Drain accepted non-critical query trace writes during app shutdown."""
     shutdown_background_tasks(wait=True)
 
 
@@ -62,10 +62,11 @@ async def rag_query_stream(payload: QueryRequest, request: Request):
 
     Events emitted:
     - routing: {routing, conversation_id}
-    - status: {phase, message}         -- pipeline progress indicator
+    - status: {phase, state, message, elapsed_ms?, detail?, metadata?}
+                                      -- factual pipeline progress
     - token: "<string>"                -- individual answer token (JSON-encoded)
     - sources: [...SourceChunk]
-    - done: {}
+    - done: {elapsed_ms, conversation_persisted}
     - error: {message, phase}          -- emitted on streaming failure
     """
     try:

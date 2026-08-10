@@ -15,6 +15,9 @@ class Message(BaseModel):
     """单条对话消息，用于传递多轮对话历史。"""
     role: str = Field(..., pattern="^(user|assistant)$", description="消息角色")
     content: str = Field(..., max_length=100_000, description="消息文本内容")
+    # Persisted messages carry this internal grouping key. Browser history may
+    # omit it; the context manager then falls back to adjacent role pairs.
+    turn_id: str | None = Field(default=None, max_length=128, description="完整问答轮次 ID")
 
 
 class QueryRequest(BaseModel):
@@ -50,3 +53,4 @@ class QueryResponse(BaseModel):
     sources: list[SourceChunk]
     conversation_id: str
     routing: str  # "rag" | "direct" | "greeting"
+    conversation_persisted: bool = True

@@ -39,6 +39,7 @@ python -m unittest discover tests/
 # Frontend
 cd frontend && npm ci
 cd frontend && npm run dev
+cd frontend && npm test
 cd frontend && npm run lint
 cd frontend && npm run build
 
@@ -68,13 +69,13 @@ rm -f data/ingestion_state.db
 
 ### Backend
 
-- `app/main.py` — FastAPI app, configurable CORS, request IDs, optional `X-API-Key`, route registration.
+- `app/main.py` — FastAPI app, configurable CORS, request IDs, optional `X-API-Key`, route registration and conversation-memory worker lifecycle.
 - `app/api/health.py` — `GET /health` liveness and `GET /health/ready` dependency readiness.
-- `app/api/documents.py` — streamed single/batch uploads, list, delete-by-ID/source compatibility, safe error mapping.
-- `app/api/rag.py` — synchronous JSON query and SSE stream; `TOP_K` comes from settings.
+- `app/api/documents.py` — streamed single/batch uploads, optional folder `relative_paths` manifest, duplicate-path rejection, bounded parallel batch ingestion, per-file failure isolation, list, delete-by-ID/source compatibility and safe error mapping.
+- `app/api/rag.py` — synchronous JSON query and SSE stream; `TOP_K` comes from settings and SSE status payloads expose factual phase state/timing/metadata.
 - `app/api/conversations.py` — list/detail/delete conversation APIs with generic 500 responses.
-- `app/services/rag_service.py` — full orchestration: server memory, routing, retrieval, optional rerank, context planning, sync/stream generation, completed-answer side effects.
-- `app/services/ingestion_service.py` — upload adapter for the unified ingestion pipeline; returns stable identity/status without exposing the server storage path.
+- `app/services/rag_service.py` — full orchestration: server memory, interactive-inference priority, routing, configured dense/BM25/hybrid retrieval, optional rerank, context planning, sync/stream generation, factual running/completed/skipped/warning SSE events, synchronous completed-exchange persistence and best-effort trace scheduling.
+- `app/services/ingestion_service.py` — single/batch upload adapter for the unified ingestion pipeline; validates/preserves logical relative paths, applies configured batch/concurrency limits and returns stable identity/status without exposing the server storage path.
 - `app/services/document_service.py` — stable-ID document lifecycle; ambiguous source deletion returns 409.
 
 ### RAG primitives
@@ -83,28 +84,33 @@ rm -f data/ingestion_state.db
 - `app/rag/splitter.py` — Markdown H1/H2/H3-aware split followed by recursive character splitting; recursive splitting for other formats.
 - `app/rag/embeddings.py` — cached `OpenAIEmbeddings`; true thread-safe 256-entry LRU keyed by endpoint/model/revision/text SHA-256; client reuse.
 - `app/rag/query_processor.py` — Layer 0 regex quick replies; Layer 1 JSON route/intent/rewrite/direct answer with legacy parser; malformed output and exceptions fail open to RAG.
-- `app/rag/context_manager.py` — authoritative server memory, client-tail reconciliation, rolling summaries, deterministic token budgeting and truncation.
-- `app/rag/conversation_store.py` — SQLite WAL store; full messages plus summary cursor; schema migration, busy timeout, striped locks and `turn_id` idempotency. Read/delete failures propagate so APIs can distinguish storage errors from empty/404 results.
-- `app/rag/vectorstore.py` / `retriever.py` — cached Qdrant wrapper and `similarity_search_with_score`.
-- `app/rag/reranker.py` — explicit `RerankCandidate(document, vector_score)` contract; NoOp, Cross-Encoder and Hybrid Fusion; safe vector fallback.
+- `app/rag/context_manager.py` — authoritative server memory, client-tail reconciliation, separate pending-compaction complete-turn buffer and recent Sliding Window, count/token-triggered strict schema-v1 rolling summaries with typed outcomes, deterministic prompt budgeting and pair-preserving truncation.
+- `app/rag/conversation_store.py` — SQLite WAL store; full messages plus structured summary cursor/schema/revision/token metrics and coalesced durable `conversation_memory_jobs`; exchange/job atomic commit, leases/retries, legacy half-turn cursor repair, schema migration, busy timeout, striped locks and `turn_id` idempotency. Read/delete failures propagate so APIs can distinguish storage errors from empty/404 results.
+- `app/rag/memory_worker.py` — process-local single worker for durable rolling-summary jobs; startup backfill, lease recovery, exponential retry/dead state, graceful stop and user-query-aware admission.
+- `app/rag/bm25.py` — shared Qdrant `qdrant/bm25` document/query construction; multilingual tokenizer and language configuration must remain identical at ingest and query time.
+- `app/rag/vectorstore.py` / `retriever.py` — cached Qdrant access plus backward-compatible dense, BM25-only and dense+BM25 RRF/DBSF retrieval; Hybrid collections use named dense/sparse vectors while legacy collections keep unnamed dense vectors.
+- `app/rag/reranker.py` — explicit `RerankCandidate(document, retrieval_score)` contract with a backward `vector_score` alias; NoOp, Cross-Encoder and legacy keyword Fusion; safe first-stage fallback.
 - `app/rag/prompt.py` / `chain.py` — untrusted-memory/context boundaries and LCEL sync/async generation.
 - `app/rag/query_logger.py` — thread-safe JSONL query traces with conversation/turn/routing/stage timings.
 - `app/core/background_tasks.py` — bounded fixed worker executor, queue backpressure and graceful shutdown.
+- `app/core/inference_coordinator.py` — tracks active interactive requests and admits new background summary inference only while the user path is idle.
 
 ### Ingestion
 
 - `app/rag/ingestion/checksum_store.py` — authoritative SQLite `document_registry`, atomic version activation, durable predecessor-cleanup queue, stable collection-scoped IDs and legacy migration.
-- `app/rag/ingestion/batch_embedder.py` — OpenAI-compatible batch embeddings.
-- `app/rag/ingestion/bulk_writer.py` — metadata/count/dimension validation, deterministic versioned point IDs, synchronous batched upsert, exact version/ID deletes, document listing.
-- `app/rag/ingestion/ingest_pipeline.py` — scan → identity/version → load/split → embed → new Qdrant version → atomic registry activation/cleanup enqueue → idempotent predecessor cleanup; exact rollback, pending-cleanup retry, legacy upload adoption and safe removed-file reconciliation.
-- `app/utils/file_utils.py` — streamed bounded uploads, UUID storage, extension/content validation, deletion restricted to `data/raw`.
+- `app/rag/ingestion/batch_embedder.py` — OpenAI-compatible embedding requests through a process-wide bounded executor; validates response indexes and restores original batch/chunk order.
+- `app/rag/ingestion/bulk_writer.py` — metadata/count/dense-sparse schema validation, deterministic versioned point IDs, synchronous batched upsert, optional same-point named dense + BM25 sparse vectors, exact version/ID deletes, document listing.
+- `app/rag/ingestion/ingest_pipeline.py` — scan → identity/version → load/split → embed → new Qdrant version → atomic registry activation/cleanup enqueue → idempotent predecessor cleanup; explicit upload batches can use bounded independent-document workers while the outer lifecycle lock remains held; exact rollback, pending-cleanup retry, legacy upload adoption and safe removed-file reconciliation.
+- `app/utils/file_utils.py` — async-offloaded bounded upload writes/content checks, UUID storage, extension/content/relative-path validation and deletion restricted to `data/raw`.
 
-Upload identity is the normalized original filename, so reuploading the same name replaces that logical upload. Directory identity is the canonical path. Qdrant and SQLite do not share a transaction; the code writes the new Qdrant version first, atomically activates it with a durable SQLite cleanup record, then retries predecessor cleanup. This is a local saga, not distributed ACID.
+Standalone upload identity is the normalized original filename. Folder upload identity is the normalized browser relative path, so `backend/README.md` and `frontend/README.md` remain distinct while reuploading the same relative path replaces that logical document. Relative paths are metadata/identity only; bytes remain under UUID names in `data/raw`. Directory CLI identity is the canonical path. Qdrant and SQLite do not share a transaction; the code writes the new Qdrant version first, atomically activates it with a durable SQLite cleanup record, then retries predecessor cleanup. This is a local saga, not distributed ACID.
 
 ### Frontend
 
-- `frontend/src/App.jsx` — single-page chat/upload/document/conversation UI; cancellable SSE rendering; accurate indexed/up-to-date upload states; client history tail for persistence reconciliation; `@rag`; stable-ID deletion.
-- `frontend/src/api.js` — configurable `VITE_API_BASE_URL`, optional API key, Axios JSON calls and abortable fetch/SSE reader.
+- `frontend/src/App.jsx` — single-page chat/upload/document/conversation UI; recursive folder drop/picker with accepted/ignored previews; cancellable SSE rendering with a live factual pipeline timeline and nonfatal persistence warning state; document-level Source tags instead of visible score piles; accurate indexed/up-to-date upload states; client history tail; `@rag`; stable-ID deletion.
+- `frontend/src/folderUpload.js` — asynchronous File System Access/WebKit directory traversal, extension/system-file filtering and relative-path duplicate detection.
+- `frontend/src/streamPresentation.js` — stable phase updates including warnings, failed-stage marking, elapsed-time extraction and chunk-to-document Source tag grouping.
+- `frontend/src/api.js` — configurable `VITE_API_BASE_URL`, optional API key, sequential 20-file multipart upload batches with relative-path manifests, Axios JSON calls and abortable fetch/SSE reader.
 - `frontend/src/App.css` — Editorial Ink component styles and CJK/Markdown rendering.
 - `frontend/src/index.css` — reset, texture and local system font stack; no runtime Google Fonts dependency.
 - `frontend/.dockerignore` — excludes local Vite env files, dependencies and build output from the frontend image context.
@@ -114,7 +120,7 @@ The frontend remains a large single component. Do not claim it has already been 
 
 ### Evaluation
 
-- `evaluation/run_retrieval_eval.py` — production retriever runner; `retrieval-eval-v1` report shape with `metric_semantics_version=evidence-label-v2`, dataset hash, Git state, settings snapshot and fingerprint.
+- `evaluation/run_retrieval_eval.py` — production retriever runner; compares dense/BM25/hybrid modes and records index schema, fusion/prefetch and BM25 configuration in the `retrieval-eval-v1` provenance alongside `metric_semantics_version=evidence-label-v2`, dataset hash and Git state.
 - `evaluation/retrieval_metrics/matching.py` — stable evidence labels; unmatched gold remains in the denominator.
 - `evaluation/retrieval_metrics/evaluator.py` — evidence-level Recall/Precision/MRR/NDCG while preserving original ranks; chunk-level context quality.
 - `evaluation/retrieval_eval_pipeline.ipynb` — deterministic demo/live analysis and multi-experiment comparison; LIVE Rerank records attempted/applied/fallback, DEMO disables Rerank, primary metrics use only top K, and comparison rejects incompatible provenance.
@@ -125,12 +131,12 @@ Historical reports without `metric_semantics_version=evidence-label-v2` are not 
 
 ### Infrastructure and tests
 
-- Qdrant is pinned to `qdrant/qdrant:v1.18.2` in Compose.
+- Qdrant is pinned to `qdrant/qdrant:v1.18.2` in Compose. Hybrid rollout must use a new collection with `RETRIEVAL_INDEX_SCHEMA=hybrid`; do not point that schema at the legacy unnamed-vector collection.
 - The full Compose profile uses `host.docker.internal` for host-local LLM/embedding services.
 - Root and frontend-specific `.dockerignore` files keep local env files and tool configuration out of Docker build contexts.
 - Python runtime/evaluation packages in `requirements.txt` / `requirements-eval.txt` and frontend packages in `package-lock.json` are version-pinned inputs.
-- `.github/workflows/ci.yml` runs Python 3.11 tests plus Node 22 lint/build.
-- Current offline suite: 160 unittest cases. They mock external boundaries and do not prove real model/Qdrant/browser/load behavior.
+- `.github/workflows/ci.yml` runs Python 3.11 tests plus Node 22 frontend logic tests, lint and build.
+- Current offline suite: 206 Python unittest cases plus 10 Node frontend tests. They mock external boundaries and do not prove real model/Qdrant/browser/load behavior.
 
 ## Dev log habit
 

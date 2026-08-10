@@ -84,7 +84,7 @@ file=<binary>
 }
 ```
 
-同名同内容再次上传会返回 `status=up_to_date`、`change_type=unchanged`，并清理本次新建的临时 UUID 文件。同名但内容变化被视为稳定文档的新版本。响应不会暴露服务端 UUID 存储路径。
+单文件上传以 NFC 规范化的原文件名为逻辑身份。同名同内容再次上传会返回 `status=up_to_date`、`change_type=unchanged`，并清理本次新建的临时 UUID 文件；同名但内容变化被视为新版本。响应不会暴露服务端 UUID 存储路径。
 
 `cleanup_pending=true` 表示新版本已经激活，但旧版本清理失败并留在 SQLite 持久化队列等待下次幂等重试；此时不会回滚已经激活的新版本。
 
@@ -98,7 +98,18 @@ file=<binary>
 
 ### `POST /documents/upload-batch`
 
-同一个 `files` 字段传多个文件。文件顺序处理，一个失败不阻止后续文件：
+同一个 `files` 字段传多个文件。旧客户端可只传 `files`；文件夹客户端同时按相同顺序重复传递 `relative_paths`：
+
+```text
+files=<binary README.md>
+relative_paths=project/backend/README.md
+files=<binary README.md>
+relative_paths=project/frontend/README.md
+```
+
+`relative_paths` 如果出现，数量必须与 `files` 完全相同，否则返回 400。每个路径必须是 NFC 规范化后的安全相对路径，末段必须与对应 `UploadFile.filename` 一致。绝对路径、`..`、驱动器前缀、空路径段、过长或过深路径会被逐文件拒绝。逻辑路径只用于 source/身份，服务端存储仍使用 `data/raw` 下的 UUID 文件。
+
+文件按顺序处理，一个失败不阻止后续文件：
 
 ```json
 {
@@ -106,7 +117,8 @@ file=<binary>
     {
       "status": "indexed",
       "document_id": "0de2d27e-...",
-      "source": "guide.md",
+      "filename": "project/backend/README.md",
+      "source": "project/backend/README.md",
       "chunks": 12
     },
     {
@@ -118,7 +130,9 @@ file=<binary>
 }
 ```
 
-批量端点用逐文件 `status` 表示部分失败，因此有效 multipart 请求通常返回 200。
+批量端点用逐文件 `status` 表示路径、格式、大小、内容或摄取失败，因此有效 multipart 请求通常返回 200。结果顺序与请求文件顺序一致。前端会先忽略不支持扩展名、系统文件和重复相对路径，但后端仍会重新校验，不信任客户端过滤。
+
+服务端以 `UPLOAD_INGESTION_CONCURRENCY` 限制一个请求内的并行文档数，并以进程级 `EMBEDDING_MAX_CONCURRENCY` 限制所有上传共享的 embedding HTTP 并发；这两个值不是无界线程数。
 
 ### `GET /documents`
 
@@ -189,7 +203,7 @@ file=<binary>
 | `history[].content` | 最大 100000 字符 |
 | `force_rag` | 默认 `false` |
 
-`history` 不是服务端长期记忆的替代品，只用于与可能尚未落库的浏览器尾部对账。
+`history` 不是服务端长期记忆的替代品，只用于并行请求、连接中断和旧版本遗留状态下的浏览器尾部对账。
 
 ### `POST /rag/query`
 
@@ -211,7 +225,8 @@ file=<binary>
     }
   ],
   "conversation_id": "conversation-1",
-  "routing": "rag"
+  "routing": "rag",
+  "conversation_persisted": true
 }
 ```
 
@@ -223,7 +238,7 @@ file=<binary>
 | `direct` | Layer 1 直接回答，无检索 |
 | `rag` | 检索并基于文档生成；`force_rag` 也会进入该路径 |
 
-`sources[].score` 是当前 vector/Rerank 策略的排序分数，不保证跨策略同量纲。客户端只应在相同策略与配置内比较，不应使用一个固定阈值解释所有分数。
+`sources[].score` 是当前 dense、BM25、RRF/DBSF 或 Rerank 策略的最终排序分数，不保证跨策略同量纲。客户端只应在相同策略与配置内比较，不应使用一个固定阈值解释所有分数。
 
 错误：
 
@@ -244,7 +259,10 @@ event: routing
 data: {"routing":"rag","conversation_id":"conversation-1"}
 
 event: status
-data: {"phase":"searching","message":"Searching documents..."}
+data: {"phase":"routing","state":"running","message":"Analyzing intent and rewriting the query…"}
+
+event: status
+data: {"phase":"retrieval","state":"completed","message":"Knowledge-base search complete","elapsed_ms":214,"detail":"20 candidates retrieved","metadata":{"retrieved_candidates":20}}
 
 event: token
 data: "It writes"
@@ -253,10 +271,23 @@ event: sources
 data: [{"content":"...","source":"architecture.md","score":0.83}]
 
 event: done
-data: {}
+data: {"elapsed_ms":4821,"conversation_persisted":true}
 ```
 
-状态 phase 可能为 `searching`、`reranking`、`generating` 或 direct path 的 `responding`。
+状态 `state` 为 `running`、`completed`、`skipped` 或非致命的 `warning`。phase 按真实执行顺序可能为：
+
+- `memory`：恢复服务端摘要、待压缩完整轮次、近期消息并与客户端尾部对账；
+- `routing`：意图识别、RAG gate 和 query rewrite；
+- `retrieval`：dense/BM25/hybrid 检索；
+- `rerank`：可选精排，候选不足时为 `skipped`；
+- `context`：统一历史/文档/token 预算；
+- `generation`：LLM token 生成；
+- `responding`：无需 RAG 的直接响应；
+- `finalizing`：附加来源并等待会话 exchange 与 memory job 同事务保存；trace 另行异步写入。
+
+`completed` 通常携带实测 `elapsed_ms`；`detail` 和 `metadata` 提供候选数、Rerank 输入输出、上下文 token、完整 pending/recent turn 数、摘要 revision/token 和最终总耗时。客户端不应伪造阶段完成状态。
+
+答案生成完成但 SQLite 保存失败时不会发送 `error`，因为答案本身仍然有效。服务端发送 `finalizing` 的 `state=warning`，并以 `done.conversation_persisted=false` 结束；客户端应保留答案、提示用户复制或重试，并避免把未落库状态伪装成已保存。
 
 流中错误：
 

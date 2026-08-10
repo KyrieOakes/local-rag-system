@@ -51,6 +51,7 @@ class RerankerTest(unittest.TestCase):
 
         self.assertEqual(result[0][1], 0.73)
         self.assertEqual(result[0][0].metadata["vector_score"], 0.73)
+        self.assertEqual(result[0][0].metadata["retrieval_score"], 0.73)
         self.assertEqual(result[0][0].metadata["score"], 0.73)
 
     def test_hybrid_formula_uses_explicit_vector_score(self):

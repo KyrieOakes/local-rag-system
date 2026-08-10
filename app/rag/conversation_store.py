@@ -5,8 +5,8 @@ Stores conversation metadata + messages for the sidebar history feature.
 Follows the same singleton + context-manager pattern as checksum_store.py.
 
 Tables:
-  conversations: id | title | created_at | updated_at
-  messages:      id | conversation_id | role | content | sources | routing | created_at
+  conversations: id | title | summary | summary cursor/schema/revision/tokens | timestamps
+  messages:      id | conversation_id | role | content | sources | routing | turn_id | timestamp
 
 Thread-safe via SQLite WAL mode (enabled at connect time).
 """
@@ -35,6 +35,9 @@ CREATE TABLE IF NOT EXISTS conversations (
     title       TEXT NOT NULL DEFAULT '',
     summary     TEXT NOT NULL DEFAULT '',
     summary_through_message_id INTEGER NOT NULL DEFAULT 0,
+    summary_schema_version INTEGER NOT NULL DEFAULT 0,
+    summary_revision INTEGER NOT NULL DEFAULT 0,
+    summary_token_count INTEGER NOT NULL DEFAULT 0,
     created_at  REAL NOT NULL,
     updated_at  REAL NOT NULL
 );
@@ -54,6 +57,24 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_conv_id ON messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_messages_created  ON messages(created_at);
 CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at);
+
+CREATE TABLE IF NOT EXISTS conversation_memory_jobs (
+    conversation_id TEXT PRIMARY KEY,
+    requested_through_message_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending', 'running', 'retry', 'dead')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    available_at REAL NOT NULL,
+    lease_owner TEXT,
+    lease_until REAL,
+    last_error_code TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_jobs_due
+ON conversation_memory_jobs(status, available_at);
 """
 
 
@@ -110,6 +131,21 @@ class ConversationStore:
                     conn.execute(
                         "ALTER TABLE conversations "
                         "ADD COLUMN summary_through_message_id INTEGER NOT NULL DEFAULT 0"
+                    )
+                if "summary_schema_version" not in conversation_columns:
+                    conn.execute(
+                        "ALTER TABLE conversations "
+                        "ADD COLUMN summary_schema_version INTEGER NOT NULL DEFAULT 0"
+                    )
+                if "summary_revision" not in conversation_columns:
+                    conn.execute(
+                        "ALTER TABLE conversations "
+                        "ADD COLUMN summary_revision INTEGER NOT NULL DEFAULT 0"
+                    )
+                if "summary_token_count" not in conversation_columns:
+                    conn.execute(
+                        "ALTER TABLE conversations "
+                        "ADD COLUMN summary_token_count INTEGER NOT NULL DEFAULT 0"
                     )
                 message_columns = {
                     row[1]
@@ -223,7 +259,9 @@ class ConversationStore:
         with self._get_conn() as conn:
             conversation = conn.execute(
                 """
-                SELECT summary, summary_through_message_id
+                SELECT summary, summary_through_message_id,
+                       summary_schema_version, summary_revision,
+                       summary_token_count
                 FROM conversations
                 WHERE id = ?
                 """,
@@ -234,7 +272,7 @@ class ConversationStore:
 
             messages = conn.execute(
                 """
-                SELECT id, role, content
+                SELECT id, role, content, turn_id
                 FROM messages
                 WHERE conversation_id = ? AND id > ?
                 ORDER BY id ASC
@@ -244,11 +282,40 @@ class ConversationStore:
                     conversation["summary_through_message_id"],
                 ),
             ).fetchall()
+            # Older compaction code could advance the cursor after a user
+            # message. Re-include that boundary message once so the new
+            # turn-aware window can heal the legacy half-turn on its next
+            # successful structured compaction.
+            if messages and messages[0]["role"] == "assistant":
+                boundary = conn.execute(
+                    """
+                    SELECT id, role, content, turn_id
+                    FROM messages
+                    WHERE conversation_id = ? AND id = ?
+                    """,
+                    (
+                        conversation_id,
+                        conversation["summary_through_message_id"],
+                    ),
+                ).fetchone()
+                if (
+                    boundary
+                    and boundary["role"] == "user"
+                    and (
+                        boundary["turn_id"] is None
+                        or messages[0]["turn_id"] is None
+                        or boundary["turn_id"] == messages[0]["turn_id"]
+                    )
+                ):
+                    messages.insert(0, boundary)
             return {
                 "summary": conversation["summary"],
                 "summary_through_message_id": conversation[
                     "summary_through_message_id"
                 ],
+                "summary_schema_version": conversation["summary_schema_version"],
+                "summary_revision": conversation["summary_revision"],
+                "summary_token_count": conversation["summary_token_count"],
                 "messages": [dict(message) for message in messages],
             }
 
@@ -257,25 +324,282 @@ class ConversationStore:
         conversation_id: str,
         summary: str,
         through_message_id: int,
+        *,
+        summary_schema_version: int = 1,
+        summary_token_count: int = 0,
     ) -> bool:
-        """Atomically advance the rolling-summary cursor, rejecting stale writers."""
+        """Atomically advance the structured-summary cursor and revision."""
         with self._conversation_lock(conversation_id):
             with self._get_conn() as conn:
                 cursor = conn.execute(
                     """
                     UPDATE conversations
-                    SET summary = ?, summary_through_message_id = ?
+                    SET summary = ?,
+                        summary_through_message_id = ?,
+                        summary_schema_version = ?,
+                        summary_revision = summary_revision + 1,
+                        summary_token_count = ?
                     WHERE id = ? AND summary_through_message_id < ?
                     """,
                     (
                         summary,
                         through_message_id,
+                        summary_schema_version,
+                        summary_token_count,
                         conversation_id,
                         through_message_id,
                     ),
                 )
                 conn.commit()
                 return cursor.rowcount > 0
+
+    def _upsert_memory_job(
+        self,
+        conn: sqlite3.Connection,
+        conversation_id: str,
+        through_message_id: int,
+        now: float,
+    ) -> None:
+        """Coalesce one durable memory request per conversation."""
+        available_at = now + settings.memory_job_debounce_seconds
+        conn.execute(
+            """
+            INSERT INTO conversation_memory_jobs (
+                conversation_id, requested_through_message_id, status,
+                attempts, available_at, lease_owner, lease_until,
+                last_error_code, created_at, updated_at
+            )
+            VALUES (?, ?, 'pending', 0, ?, NULL, NULL, NULL, ?, ?)
+            ON CONFLICT(conversation_id) DO UPDATE SET
+                requested_through_message_id = MAX(
+                    requested_through_message_id,
+                    excluded.requested_through_message_id
+                ),
+                status = CASE
+                    WHEN status = 'running' THEN 'running'
+                    ELSE 'pending'
+                END,
+                attempts = CASE WHEN status = 'running' THEN attempts ELSE 0 END,
+                available_at = CASE
+                    WHEN status = 'running' THEN available_at
+                    ELSE excluded.available_at
+                END,
+                lease_owner = CASE
+                    WHEN status = 'running' THEN lease_owner
+                    ELSE NULL
+                END,
+                lease_until = CASE
+                    WHEN status = 'running' THEN lease_until
+                    ELSE NULL
+                END,
+                last_error_code = NULL,
+                updated_at = excluded.updated_at
+            """,
+            (
+                conversation_id,
+                through_message_id,
+                available_at,
+                now,
+                now,
+            ),
+        )
+
+    def backfill_memory_jobs(self) -> int:
+        """Queue existing unsummarized conversations after upgrades/restarts."""
+        now = time.time()
+        queued = 0
+        with self._get_conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                """
+                SELECT c.id AS conversation_id, MAX(m.id) AS through_message_id
+                FROM conversations c
+                JOIN messages m ON m.conversation_id = c.id
+                LEFT JOIN conversation_memory_jobs j ON j.conversation_id = c.id
+                WHERE m.id > c.summary_through_message_id
+                  AND j.conversation_id IS NULL
+                GROUP BY c.id
+                """
+            ).fetchall()
+            for row in rows:
+                self._upsert_memory_job(
+                    conn,
+                    row["conversation_id"],
+                    row["through_message_id"],
+                    now,
+                )
+                queued += 1
+            conn.commit()
+        return queued
+
+    def claim_due_memory_job(
+        self,
+        worker_id: str,
+        *,
+        lease_seconds: float,
+        now: float | None = None,
+    ) -> dict | None:
+        """Atomically claim one due or lease-expired memory job."""
+        current = time.time() if now is None else now
+        with self._get_conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT *
+                FROM conversation_memory_jobs
+                WHERE (
+                    status IN ('pending', 'retry') AND available_at <= ?
+                ) OR (
+                    status = 'running' AND lease_until IS NOT NULL AND lease_until <= ?
+                )
+                ORDER BY available_at ASC, created_at ASC
+                LIMIT 1
+                """,
+                (current, current),
+            ).fetchone()
+            if row is None:
+                conn.commit()
+                return None
+            attempts = row["attempts"] + 1
+            lease_until = current + lease_seconds
+            conn.execute(
+                """
+                UPDATE conversation_memory_jobs
+                SET status = 'running', attempts = ?, lease_owner = ?,
+                    lease_until = ?, updated_at = ?
+                WHERE conversation_id = ?
+                """,
+                (
+                    attempts,
+                    worker_id,
+                    lease_until,
+                    current,
+                    row["conversation_id"],
+                ),
+            )
+            conn.commit()
+            result = dict(row)
+            result.update(
+                {
+                    "status": "running",
+                    "attempts": attempts,
+                    "lease_owner": worker_id,
+                    "lease_until": lease_until,
+                    "claimed_through_message_id": row[
+                        "requested_through_message_id"
+                    ],
+                }
+            )
+            return result
+
+    def complete_memory_job(
+        self,
+        conversation_id: str,
+        worker_id: str,
+        claimed_through_message_id: int,
+        *,
+        needs_follow_up: bool = False,
+        now: float | None = None,
+    ) -> bool:
+        """Acknowledge a claim without deleting a concurrently newer request."""
+        current = time.time() if now is None else now
+        with self._get_conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT requested_through_message_id, lease_owner
+                FROM conversation_memory_jobs
+                WHERE conversation_id = ?
+                """,
+                (conversation_id,),
+            ).fetchone()
+            if row is None or row["lease_owner"] != worker_id:
+                conn.rollback()
+                return False
+            if (
+                needs_follow_up
+                or row["requested_through_message_id"] > claimed_through_message_id
+            ):
+                conn.execute(
+                    """
+                    UPDATE conversation_memory_jobs
+                    SET status = 'pending', attempts = 0, available_at = ?,
+                        lease_owner = NULL, lease_until = NULL,
+                        last_error_code = NULL, updated_at = ?
+                    WHERE conversation_id = ? AND lease_owner = ?
+                    """,
+                    (current, current, conversation_id, worker_id),
+                )
+            else:
+                conn.execute(
+                    """
+                    DELETE FROM conversation_memory_jobs
+                    WHERE conversation_id = ? AND lease_owner = ?
+                    """,
+                    (conversation_id, worker_id),
+                )
+            conn.commit()
+            return True
+
+    def retry_memory_job(
+        self,
+        conversation_id: str,
+        worker_id: str,
+        *,
+        error_code: str,
+        max_attempts: int,
+        retry_base_seconds: float,
+        now: float | None = None,
+    ) -> str | None:
+        """Persist retry/dead state with exponential backoff."""
+        current = time.time() if now is None else now
+        with self._get_conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT attempts, lease_owner
+                FROM conversation_memory_jobs
+                WHERE conversation_id = ?
+                """,
+                (conversation_id,),
+            ).fetchone()
+            if row is None or row["lease_owner"] != worker_id:
+                conn.rollback()
+                return None
+            if row["attempts"] >= max_attempts:
+                status = "dead"
+                available_at = current
+            else:
+                status = "retry"
+                available_at = current + retry_base_seconds * (
+                    2 ** max(0, row["attempts"] - 1)
+                )
+            conn.execute(
+                """
+                UPDATE conversation_memory_jobs
+                SET status = ?, available_at = ?, lease_owner = NULL,
+                    lease_until = NULL, last_error_code = ?, updated_at = ?
+                WHERE conversation_id = ?
+                """,
+                (
+                    status,
+                    available_at,
+                    error_code[:64],
+                    current,
+                    conversation_id,
+                ),
+            )
+            conn.commit()
+            return status
+
+    def get_memory_job(self, conversation_id: str) -> dict | None:
+        """Return durable job state for tests and local observability."""
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM conversation_memory_jobs WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            return dict(row) if row else None
 
     def save_exchange(
         self,
@@ -317,7 +641,22 @@ class ConversationStore:
                             (conversation_id, turn_id),
                         ).fetchone()[0]
                         if existing_count >= 2:
-                            conn.rollback()
+                            assistant_id = conn.execute(
+                                """
+                                SELECT id FROM messages
+                                WHERE conversation_id = ? AND turn_id = ?
+                                      AND role = 'assistant'
+                                ORDER BY id DESC LIMIT 1
+                                """,
+                                (conversation_id, turn_id),
+                            ).fetchone()[0]
+                            self._upsert_memory_job(
+                                conn,
+                                conversation_id,
+                                assistant_id,
+                                now,
+                            )
+                            conn.commit()
                             logger.debug(
                                 "Skipped duplicate turn %s for conversation %s",
                                 turn_id,
@@ -345,7 +684,7 @@ class ConversationStore:
                     """, (conversation_id, user_message, turn_id, now))
 
                     # Insert assistant message
-                    conn.execute(f"""
+                    assistant_cursor = conn.execute(f"""
                         {insert_prefix} INTO messages (
                             conversation_id, role, content, sources, routing,
                             turn_id, created_at
@@ -373,6 +712,30 @@ class ConversationStore:
                             raise sqlite3.IntegrityError(
                                 f"incomplete exchange for turn_id={turn_id}"
                             )
+
+                    if turn_id is not None:
+                        assistant_row = conn.execute(
+                            """
+                            SELECT id FROM messages
+                            WHERE conversation_id = ? AND turn_id = ?
+                                  AND role = 'assistant'
+                            ORDER BY id DESC LIMIT 1
+                            """,
+                            (conversation_id, turn_id),
+                        ).fetchone()
+                        assistant_message_id = assistant_row[0] if assistant_row else None
+                    else:
+                        assistant_message_id = assistant_cursor.lastrowid
+                    if not assistant_message_id:
+                        raise sqlite3.IntegrityError(
+                            "assistant message ID was not created"
+                        )
+                    self._upsert_memory_job(
+                        conn,
+                        conversation_id,
+                        assistant_message_id,
+                        now,
+                    )
 
                     conn.commit()
                     logger.debug("Saved exchange for conversation %s", conversation_id)

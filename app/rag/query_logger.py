@@ -18,6 +18,8 @@ from typing import Mapping
 
 from langchain_core.documents import Document
 
+from app.core.config import settings
+
 logger = logging.getLogger(__name__)
 
 HISTORY_DIR = Path("logs/history")
@@ -71,6 +73,20 @@ def log_rag_query(
         "rewritten_query": rewritten_query,
         "intent": intent,
         "top_k": top_k,
+        "retrieval_config": {
+            "index_schema": settings.retrieval_index_schema,
+            "mode": settings.retrieval_mode,
+            "fusion": (
+                settings.hybrid_fusion
+                if settings.retrieval_mode == "hybrid"
+                else None
+            ),
+            "prefetch_top_n": (
+                settings.hybrid_prefetch_top_n
+                if settings.retrieval_mode == "hybrid"
+                else None
+            ),
+        },
         "retrieved_chunks": chunks,
         "answer": answer,
     }

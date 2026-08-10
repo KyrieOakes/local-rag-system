@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import codecs
+import unicodedata
 import zipfile
 import zlib
 from pathlib import Path
@@ -15,6 +17,9 @@ from app.core.config import settings
 UPLOAD_DIR = Path("data/raw")
 UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
 ALLOWED_EXTENSIONS = {".pdf", ".txt", ".md", ".markdown", ".docx"}
+MAX_UPLOAD_RELATIVE_PATH_LENGTH = 1024
+MAX_UPLOAD_RELATIVE_PATH_DEPTH = 64
+MAX_UPLOAD_PATH_SEGMENT_LENGTH = 255
 
 
 class UploadTooLargeError(ValueError):
@@ -36,6 +41,54 @@ def validate_file_extension(filename: str | None) -> None:
     suffix = Path(_original_basename(filename)).suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
         raise ValueError(f"Unsupported file type: {suffix}")
+
+
+def normalize_upload_relative_path(
+    relative_path: str | None,
+    *,
+    original_filename: str | None = None,
+) -> str:
+    """Validate a browser-provided logical path without using it on disk.
+
+    Folder uploads use this normalized relative path as their stable document
+    identity and display source. Uploaded bytes are still stored under a UUID
+    inside ``data/raw``; this value must never become a filesystem target.
+    """
+    raw_path = relative_path or original_filename or ""
+    normalized = unicodedata.normalize("NFC", str(raw_path)).replace("\\", "/")
+    if not normalized or "\0" in normalized:
+        raise ValueError("Uploaded file must have a valid relative path")
+    if len(normalized) > MAX_UPLOAD_RELATIVE_PATH_LENGTH:
+        raise ValueError("Uploaded relative path is too long")
+    if normalized.startswith("/"):
+        raise ValueError("Uploaded path must be relative")
+
+    segments = normalized.split("/")
+    if (
+        len(segments) > MAX_UPLOAD_RELATIVE_PATH_DEPTH
+        or any(
+            not segment
+            or segment in {".", ".."}
+            or len(segment) > MAX_UPLOAD_PATH_SEGMENT_LENGTH
+            for segment in segments
+        )
+    ):
+        raise ValueError("Uploaded relative path contains an unsafe segment")
+    if len(segments[0]) >= 2 and segments[0][0].isalpha() and segments[0][1] == ":":
+        raise ValueError("Uploaded path must not contain a drive prefix")
+
+    basename = segments[-1]
+    if original_filename is not None:
+        expected_basename = unicodedata.normalize(
+            "NFC",
+            _original_basename(original_filename),
+        )
+        if basename != expected_basename:
+            raise ValueError(
+                "Uploaded relative path must end with the uploaded filename"
+            )
+    validate_file_extension(basename)
+    return "/".join(segments)
 
 
 def build_safe_filename(original_filename: str) -> str:
@@ -127,21 +180,30 @@ async def save_upload_file(
     if limit <= 0:
         raise ValueError("Upload size limit must be greater than zero")
 
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(UPLOAD_DIR.mkdir, parents=True, exist_ok=True)
     file_path = UPLOAD_DIR / build_safe_filename(original_filename)
     total = 0
+    destination = None
     try:
-        with file_path.open("xb") as destination:
-            while True:
-                chunk = await file.read(UPLOAD_READ_CHUNK_BYTES)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > limit:
-                    raise UploadTooLargeError(limit)
-                destination.write(chunk)
-        validate_file_content(file_path, original_filename)
+        destination = await asyncio.to_thread(file_path.open, "xb")
+        while True:
+            chunk = await file.read(UPLOAD_READ_CHUNK_BYTES)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > limit:
+                raise UploadTooLargeError(limit)
+            await asyncio.to_thread(destination.write, chunk)
+        await asyncio.to_thread(destination.close)
+        destination = None
+        await asyncio.to_thread(
+            validate_file_content,
+            file_path,
+            original_filename,
+        )
     except Exception:
-        remove_upload_file(file_path)
+        if destination is not None:
+            await asyncio.to_thread(destination.close)
+        await asyncio.to_thread(remove_upload_file, file_path)
         raise
     return str(file_path)

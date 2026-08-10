@@ -102,8 +102,29 @@ conda activate localrag
 python evaluation/run_retrieval_eval.py \
   --dataset evaluation/datasets/golden_retrieval.example.jsonl \
   --top-k 5 \
+  --retrieval-mode dense \
   --experiment-name recursive-800-120
 ```
+
+Hybrid collection 建成后，应在同一索引和 golden dataset 上分别运行 dense、BM25 和融合检索：
+
+```bash
+python evaluation/run_retrieval_eval.py \
+  --dataset evaluation/datasets/golden_retrieval.example.jsonl \
+  --top-k 5 \
+  --retrieval-mode bm25 \
+  --experiment-name bm25-only
+
+python evaluation/run_retrieval_eval.py \
+  --dataset evaluation/datasets/golden_retrieval.example.jsonl \
+  --top-k 5 \
+  --retrieval-mode hybrid \
+  --hybrid-fusion rrf \
+  --hybrid-prefetch-top-n 40 \
+  --experiment-name dense-bm25-rrf
+```
+
+`--retrieval-mode bm25|hybrid` 要求 `.env` 使用 `RETRIEVAL_INDEX_SCHEMA=hybrid` 并指向已经全量重建的 Hybrid collection。报告会记录索引 schema、检索模式、BM25 model/tokenizer/language、fusion 和每路 prefetch 数量，防止把不同策略误当成同一实验。
 
 如果要把 query rewriting 也纳入检索评估：
 
@@ -169,9 +190,8 @@ conda activate localrag
 pip install <eval-package>
 ```
 
-当前这版没有新增下载依赖。
+BM25 使用 Qdrant 自带的 `qdrant/bm25` 文本推理和 sparse IDF modifier，没有新增 Python 下载依赖。摄取和查询都使用 `app/rag/bm25.py` 中的同一份 multilingual 配置。
 
 ## 当前边界
 
-这个模块负责离线检索评估，不负责自动切换 chunking 策略，也不负责自动重建 Qdrant collection。策略切换、清理 collection、重新摄入文档仍由现有 ingestion 流程负责。
-
+这个模块负责离线检索评估，不负责自动切换 chunking 策略，也不负责自动重建或切换 Qdrant collection。旧 dense collection 到 Hybrid collection 的迁移仍由运维配置和现有 ingestion 流程负责。

@@ -13,6 +13,7 @@ from app.api.documents import router as documents_router
 from app.api.rag import router as rag_router
 from app.api.conversations import router as conversations_router
 from app.core.config import settings
+from app.rag.memory_worker import start_memory_worker, stop_memory_worker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,6 +25,18 @@ app = FastAPI(
     title="Local RAG System",
     version="0.1.0",
 )
+
+
+@app.on_event("startup")
+def start_conversation_memory_worker() -> None:
+    start_memory_worker()
+
+
+@app.on_event("shutdown")
+def stop_conversation_memory_worker() -> None:
+    stop_memory_worker()
+
+
 @app.middleware("http")
 async def request_identity_and_optional_api_key(request: Request, call_next):
     """Attach a request ID and enforce the optional local API key.

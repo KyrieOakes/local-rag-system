@@ -35,6 +35,9 @@ class RetrievalEvaluationReportTest(unittest.TestCase):
                 use_reranker=True,
                 reranker_type="hybrid",
                 rerank_top_n=20,
+                retrieval_mode="dense",
+                hybrid_fusion="rrf",
+                hybrid_prefetch_top_n=40,
             )
 
             def fake_git(*git_args):
@@ -69,6 +72,8 @@ class RetrievalEvaluationReportTest(unittest.TestCase):
             "pipeline_fingerprint",
             report["settings_snapshot"],
         )
+        self.assertEqual(report["retrieval_config"]["mode"], "dense")
+        self.assertIn("retrieval", report["settings_snapshot"])
 
     def test_settings_fingerprint_changes_with_experiment_configuration(self):
         dataset_content = '{"id":"q1","question":"What is RAG?"}\n'
@@ -82,6 +87,9 @@ class RetrievalEvaluationReportTest(unittest.TestCase):
                 "use_reranker": False,
                 "reranker_type": "cross_encoder",
                 "rerank_top_n": 20,
+                "retrieval_mode": "dense",
+                "hybrid_fusion": "rrf",
+                "hybrid_prefetch_top_n": 40,
             }
             first_args = argparse.Namespace(top_k=5, **base)
             second_args = argparse.Namespace(top_k=10, **base)
@@ -96,6 +104,41 @@ class RetrievalEvaluationReportTest(unittest.TestCase):
         self.assertNotEqual(
             first["provenance"]["settings_fingerprint"],
             second["provenance"]["settings_fingerprint"],
+        )
+
+    def test_report_records_hybrid_retrieval_provenance(self):
+        dataset_content = '{"id":"q1","question":"What is RAG?"}\n'
+        with tempfile.TemporaryDirectory() as directory:
+            dataset_path = Path(directory) / "golden.jsonl"
+            dataset_path.write_text(dataset_content, encoding="utf-8")
+            args = argparse.Namespace(
+                experiment_name="hybrid-test",
+                dataset=str(dataset_path),
+                top_k=5,
+                use_query_processor=False,
+                use_reranker=False,
+                reranker_type="cross_encoder",
+                rerank_top_n=20,
+                retrieval_mode="hybrid",
+                hybrid_fusion="rrf",
+                hybrid_prefetch_top_n=40,
+            )
+
+            with (
+                patch(
+                    "evaluation.run_retrieval_eval._run_git_command",
+                    return_value=None,
+                ),
+                patch.object(settings, "retrieval_index_schema", "hybrid"),
+            ):
+                report = _build_report(args, per_question=[])
+
+        self.assertEqual(report["retrieval_config"]["mode"], "hybrid")
+        self.assertEqual(report["retrieval_config"]["fusion"], "rrf")
+        self.assertEqual(report["retrieval_config"]["prefetch_top_n"], 40)
+        self.assertEqual(
+            report["settings_snapshot"]["retrieval"]["index_schema"],
+            "hybrid",
         )
 
 

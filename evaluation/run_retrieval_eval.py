@@ -72,7 +72,13 @@ def main() -> None:
 
         # Retrieve: wider fetch if reranker is active
         retrieval_k = args.rerank_top_n if args.use_reranker else args.top_k
-        retrieved_results = retrieve_relevant_documents(retrieval_query, top_k=retrieval_k)
+        retrieved_results = retrieve_relevant_documents(
+            retrieval_query,
+            top_k=retrieval_k,
+            mode=args.retrieval_mode,
+            hybrid_fusion=args.hybrid_fusion,
+            hybrid_prefetch_top_n=args.hybrid_prefetch_top_n,
+        )
 
         # Rerank: narrow down to final top_k
         if args.use_reranker and len(retrieved_results) > args.top_k:
@@ -132,6 +138,24 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Evaluate production query rewriting before vector retrieval.",
     )
+    parser.add_argument(
+        "--retrieval-mode",
+        default=settings.retrieval_mode,
+        choices=["dense", "bm25", "hybrid"],
+        help="First-stage retrieval strategy (default: configured RETRIEVAL_MODE).",
+    )
+    parser.add_argument(
+        "--hybrid-fusion",
+        default=settings.hybrid_fusion,
+        choices=["rrf", "dbsf"],
+        help="Fusion used when --retrieval-mode=hybrid.",
+    )
+    parser.add_argument(
+        "--hybrid-prefetch-top-n",
+        type=int,
+        default=settings.hybrid_prefetch_top_n,
+        help="Candidates fetched from each dense/BM25 branch before fusion.",
+    )
     # ── Rerank 参数 ──
     parser.add_argument(
         "--use-reranker",
@@ -159,6 +183,21 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--top-k must be greater than zero")
     if args.rerank_top_n <= 0:
         raise ValueError("--rerank-top-n must be greater than zero")
+    retrieval_mode = getattr(args, "retrieval_mode", settings.retrieval_mode)
+    hybrid_prefetch_top_n = getattr(
+        args,
+        "hybrid_prefetch_top_n",
+        settings.hybrid_prefetch_top_n,
+    )
+    if hybrid_prefetch_top_n <= 0:
+        raise ValueError("--hybrid-prefetch-top-n must be greater than zero")
+    if (
+        retrieval_mode in {"bm25", "hybrid"}
+        and settings.retrieval_index_schema != "hybrid"
+    ):
+        raise ValueError(
+            "BM25/hybrid evaluation requires RETRIEVAL_INDEX_SCHEMA=hybrid"
+        )
     if args.use_reranker and args.rerank_top_n < args.top_k:
         raise ValueError(
             "--rerank-top-n must be greater than or equal to --top-k "
@@ -210,6 +249,21 @@ def _build_report(args: argparse.Namespace, per_question: list[dict[str, Any]]) 
         "dataset": args.dataset,
         "top_k": args.top_k,
         "use_query_processor": args.use_query_processor,
+        "retrieval_config": {
+            "index_schema": settings.retrieval_index_schema,
+            "mode": getattr(args, "retrieval_mode", settings.retrieval_mode),
+            "fusion": getattr(args, "hybrid_fusion", settings.hybrid_fusion),
+            "prefetch_top_n": getattr(
+                args,
+                "hybrid_prefetch_top_n",
+                settings.hybrid_prefetch_top_n,
+            ),
+            "dense_vector_name": settings.dense_vector_name,
+            "sparse_vector_name": settings.sparse_vector_name,
+            "bm25_model": settings.bm25_model,
+            "bm25_tokenizer": settings.bm25_tokenizer,
+            "bm25_language": settings.bm25_language,
+        },
         "metric_groups": {
             "core_metrics": ["recall@k", "precision@k", "mrr", "ndcg@k"],
             "context_quality": ["context_redundancy@k", "irrelevant_rate@k", "duplicate_rate@k"],
@@ -259,6 +313,21 @@ def _build_settings_snapshot(args: argparse.Namespace) -> dict[str, Any]:
         "top_k": args.top_k,
         "use_query_processor": args.use_query_processor,
         "use_reranker": args.use_reranker,
+        "retrieval": {
+            "index_schema": settings.retrieval_index_schema,
+            "mode": getattr(args, "retrieval_mode", settings.retrieval_mode),
+            "fusion": getattr(args, "hybrid_fusion", settings.hybrid_fusion),
+            "prefetch_top_n": getattr(
+                args,
+                "hybrid_prefetch_top_n",
+                settings.hybrid_prefetch_top_n,
+            ),
+            "dense_vector_name": settings.dense_vector_name,
+            "sparse_vector_name": settings.sparse_vector_name,
+            "bm25_model": settings.bm25_model,
+            "bm25_tokenizer": settings.bm25_tokenizer,
+            "bm25_language": settings.bm25_language,
+        },
     }
     if args.use_query_processor:
         snapshot["query_processor"] = {

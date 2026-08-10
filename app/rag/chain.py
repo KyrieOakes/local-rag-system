@@ -20,10 +20,15 @@ def _build_chain_input(
     documents: list[Document],
     history: list,
     conversation_summary: str = "",
+    pending_history: list | None = None,
 ) -> dict:
     """Build the input dict for the LangChain RAG chain."""
     context = format_documents_for_context(documents)
-    history_text = format_memory_for_prompt(conversation_summary, history)
+    history_text = format_memory_for_prompt(
+        conversation_summary,
+        history,
+        pending_history,
+    )
     return {
         "question": question,
         "context": context,
@@ -36,6 +41,7 @@ def generate_answer(
     documents: list[Document],
     history: list | None = None,
     conversation_summary: str = "",
+    pending_history: list | None = None,
 ) -> str:
     history = history or []
     llm = get_llm()
@@ -47,6 +53,7 @@ def generate_answer(
         documents,
         history,
         conversation_summary,
+        pending_history,
     )
 
     chain = rag_prompt | llm | StrOutputParser()
@@ -65,6 +72,7 @@ async def generate_answer_stream(
     documents: list[Document],
     history: list | None = None,
     conversation_summary: str = "",
+    pending_history: list | None = None,
 ):
     """Async generator that yields answer tokens one at a time via SSE."""
     history = history or []
@@ -76,6 +84,7 @@ async def generate_answer_stream(
         documents,
         history,
         conversation_summary,
+        pending_history,
     )
 
     chain = rag_prompt | llm | StrOutputParser()

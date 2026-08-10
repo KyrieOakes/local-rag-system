@@ -19,7 +19,7 @@ def _build_qdrant_client(url: str) -> QdrantClient:
     return QdrantClient(url=url)
 
 
-def _get_qdrant_client() -> QdrantClient:
+def get_qdrant_client() -> QdrantClient:
     """Reuse the transport client for the effective Qdrant URL."""
     return _build_qdrant_client(settings.qdrant_url)
 

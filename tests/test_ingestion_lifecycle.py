@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,8 +24,10 @@ from app.rag.ingestion.ingest_pipeline import (
     _retry_pending_cleanups,
     _load_and_split_file,
     _reconcile_removed_files,
+    _source_for_path,
     build_pipeline_fingerprint,
     ingest_directory,
+    ingest_file_paths,
 )
 
 
@@ -168,6 +171,59 @@ class ChecksumStoreRegistryTest(unittest.TestCase):
 
 
 class PipelineIdentityTest(unittest.TestCase):
+    @patch("app.rag.ingestion.ingest_pipeline._retry_pending_cleanups")
+    @patch("app.rag.ingestion.ingest_pipeline.ChecksumStore")
+    @patch("app.rag.ingestion.ingest_pipeline._ingest_one")
+    def test_explicit_batch_uses_bounded_document_concurrency(
+        self,
+        ingest_one_mock,
+        _store_mock,
+        _cleanup_mock,
+    ):
+        barrier = threading.Barrier(2)
+        state_lock = threading.Lock()
+        active = 0
+        max_active = 0
+
+        def ingest_side_effect(raw_path, **kwargs):
+            nonlocal active, max_active
+            with state_lock:
+                active += 1
+                max_active = max(max_active, active)
+            try:
+                barrier.wait(timeout=2)
+                return {
+                    "status": "indexed",
+                    "change_type": "new",
+                    "document_id": kwargs["source"],
+                    "source": kwargs["source"],
+                    "stored_path": str(raw_path),
+                    "chunks": 1,
+                    "cleanup_pending": False,
+                }
+            finally:
+                with state_lock:
+                    active -= 1
+
+        ingest_one_mock.side_effect = ingest_side_effect
+        result = ingest_file_paths(
+            ["/tmp/one.md", "/tmp/two.md"],
+            collection_name="collection",
+            source_map={
+                "/tmp/one.md": "one.md",
+                "/tmp/two.md": "two.md",
+            },
+            origin="upload",
+            max_workers=2,
+            continue_on_error=True,
+        )
+
+        self.assertEqual(max_active, 2)
+        self.assertEqual(
+            [document["source"] for document in result["documents"]],
+            ["one.md", "two.md"],
+        )
+
     def test_document_id_is_stable_and_collection_scoped(self):
         first = make_document_id("one", "upload:guide.md")
         again = make_document_id("one", "upload:guide.md")
@@ -175,6 +231,33 @@ class PipelineIdentityTest(unittest.TestCase):
 
         self.assertEqual(first, again)
         self.assertNotEqual(first, other_collection)
+
+    def test_folder_relative_path_disambiguates_same_basename(self):
+        backend = make_document_id(
+            "one",
+            "upload:project/backend/README.md",
+        )
+        frontend = make_document_id(
+            "one",
+            "upload:project/frontend/README.md",
+        )
+
+        self.assertNotEqual(backend, frontend)
+        self.assertEqual(
+            backend,
+            make_document_id("one", "upload:project/backend/README.md"),
+        )
+
+    def test_source_map_preserves_folder_relative_path(self):
+        raw_path = Path("data/raw/generated.md")
+        self.assertEqual(
+            _source_for_path(
+                raw_path,
+                raw_path.resolve(),
+                {str(raw_path): "project/backend/README.md"},
+            ),
+            "project/backend/README.md",
+        )
 
     def test_pipeline_fingerprint_changes_with_chunk_or_embedding_config(self):
         baseline = build_pipeline_fingerprint("collection")
@@ -192,6 +275,20 @@ class PipelineIdentityTest(unittest.TestCase):
             baseline,
             build_pipeline_fingerprint("different-collection"),
         )
+
+    def test_pipeline_fingerprint_tracks_hybrid_index_semantics(self):
+        with patch.object(settings, "retrieval_index_schema", "dense"):
+            dense = build_pipeline_fingerprint("collection")
+        with (
+            patch.object(settings, "retrieval_index_schema", "hybrid"),
+            patch.object(settings, "bm25_tokenizer", "multilingual"),
+        ):
+            hybrid = build_pipeline_fingerprint("collection")
+            with patch.object(settings, "bm25_tokenizer", "word"):
+                tokenizer_changed = build_pipeline_fingerprint("collection")
+
+        self.assertNotEqual(dense, hybrid)
+        self.assertNotEqual(hybrid, tokenizer_changed)
 
     @patch("app.rag.ingestion.ingest_pipeline.split_documents")
     @patch("app.rag.ingestion.ingest_pipeline.load_document")
@@ -265,7 +362,10 @@ class BulkWriterValidationTest(unittest.TestCase):
             },
         )
 
-        with self.assertRaisesRegex(ValueError, "does not match collection"):
+        with (
+            patch.object(settings, "retrieval_index_schema", "dense"),
+            self.assertRaisesRegex(ValueError, "does not match collection"),
+        ):
             bulk_writer.bulk_upsert_chunks(
                 [chunk],
                 [[0.1, 0.2]],
@@ -281,6 +381,99 @@ class BulkWriterValidationTest(unittest.TestCase):
 
         self.assertEqual(first, again)
         self.assertNotEqual(first, changed)
+
+    @patch("app.rag.ingestion.bulk_writer._get_client")
+    def test_hybrid_collection_writes_dense_and_bm25_in_one_point(
+        self,
+        client_factory,
+    ):
+        client = MagicMock()
+        client.collection_exists.return_value = False
+        client_factory.return_value = client
+        chunk = Document(
+            page_content="中文 BM25 and exact_identifier",
+            metadata={
+                "document_id": "doc",
+                "version_id": "version",
+                "chunk_index": 0,
+                "source": "guide.md",
+                "stored_path": "/tmp/guide.md",
+                "md5": "md5",
+                "pipeline_fingerprint": "fingerprint",
+            },
+        )
+
+        with (
+            patch.object(settings, "retrieval_index_schema", "hybrid"),
+            patch.object(settings, "dense_vector_name", "dense-v"),
+            patch.object(settings, "sparse_vector_name", "sparse-v"),
+            patch.object(settings, "bm25_tokenizer", "multilingual"),
+            patch.object(settings, "bm25_language", "none"),
+        ):
+            count = bulk_writer.bulk_upsert_chunks(
+                [chunk],
+                [[0.1, 0.2]],
+                "hybrid-collection",
+            )
+
+        self.assertEqual(count, 1)
+        create_kwargs = client.create_collection.call_args.kwargs
+        self.assertIn("dense-v", create_kwargs["vectors_config"])
+        self.assertIn("sparse-v", create_kwargs["sparse_vectors_config"])
+        self.assertEqual(
+            create_kwargs["sparse_vectors_config"]["sparse-v"].modifier,
+            bulk_writer.Modifier.IDF,
+        )
+        point = client.upsert.call_args.kwargs["points"][0]
+        self.assertEqual(point.vector["dense-v"], [0.1, 0.2])
+        self.assertEqual(point.vector["sparse-v"].text, chunk.page_content)
+        self.assertEqual(
+            point.vector["sparse-v"].options.tokenizer.value,
+            "multilingual",
+        )
+
+    @patch("app.rag.ingestion.bulk_writer._get_client")
+    def test_hybrid_schema_requires_configured_sparse_vector(
+        self,
+        client_factory,
+    ):
+        client = MagicMock()
+        client.collection_exists.return_value = True
+        client.get_collection.return_value = SimpleNamespace(
+            config=SimpleNamespace(
+                params=SimpleNamespace(
+                    vectors={"dense-v": SimpleNamespace(size=2)},
+                    sparse_vectors={},
+                )
+            )
+        )
+        client_factory.return_value = client
+        chunk = Document(
+            page_content="one",
+            metadata={
+                "document_id": "doc",
+                "version_id": "version",
+                "chunk_index": 0,
+                "source": "guide.md",
+                "stored_path": "/tmp/guide.md",
+                "md5": "md5",
+                "pipeline_fingerprint": "fingerprint",
+            },
+        )
+
+        with (
+            patch.object(settings, "retrieval_index_schema", "hybrid"),
+            patch.object(settings, "dense_vector_name", "dense-v"),
+            patch.object(settings, "sparse_vector_name", "sparse-v"),
+        ):
+            with self.assertRaisesRegex(ValueError, "BM25 sparse vector"):
+                bulk_writer.bulk_upsert_chunks(
+                    [chunk],
+                    [[0.1, 0.2]],
+                    "existing",
+                )
+
+        client.upsert.assert_not_called()
 
     @patch("app.rag.ingestion.bulk_writer._scroll_metadata")
     def test_same_source_legacy_groups_receive_distinct_stable_ids(
