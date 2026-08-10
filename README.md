@@ -15,6 +15,7 @@
 | 检索与精排 | 兼容旧 dense collection；可选 BM25、dense+BM25 RRF/DBSF 融合与 Cross-Encoder | Hybrid 默认关闭，需新 collection 重建并用评估证明收益 |
 | 对话上下文 | SQLite 原文、完整 turn 双上限 Sliding Window、待压缩缓冲、结构化滚动摘要、客户端尾部对账、统一 token 预算 | 离线 tokenizer 是保守估算；尚无跨会话用户画像 |
 | 流式输出 | SSE 真实阶段 start/complete/warning、耗时、候选数、上下文 token、token/sources/error/done；前端实时流水线 | SSE 开始后不能再修改 HTTP 状态码 |
+| 前端呈现 | ReactMarkdown 回答、文档级 Source 标签；助手正文使用正常空白流，用户多行输入与代码块保留原格式 | 前端仍集中在大型 `App.jsx`，尚无完整浏览器 E2E |
 | 可靠性 | 会话与 memory job 同事务、单 Worker/租约/退避重试、用户推理优先、WAL/busy timeout、turn 幂等 | 查询轨迹仍是 best-effort；任务队列只适合当前单机进程 |
 | 安全 | 安全配置默认值、请求长度限制、上传大小/内容校验、提示词注入边界、可选 API Key | API Key 只适合简单边界保护，不替代用户体系、JWT、RBAC 或限流 |
 | 质量保障 | 206 项 Python 测试、10 项前端测试、lint/build、GitHub Actions、评估 provenance | 真实模型 E2E、完整浏览器自动化和负载测试仍需补充 |
@@ -71,6 +72,8 @@ flowchart LR
 6. 优先保留最新完整 turn 和排名靠前的文档；最新一轮过长时同时截断 user/assistant 内容，最后一个文档块也可确定性截断。
 7. 当前问题本身都无法装入窗口时，同步接口返回 413，SSE 返回 `phase=context` 的 error 后结束。
 8. 可压缩旧 turn 达到 4 轮或 2048 tokens 时，SQLite outbox 唤醒单并发 Worker，把它们合并为包含 overview/goals/constraints/decisions/entities/open questions 的严格 JSON；解析或预算校验失败时不推进游标，并按租约与指数退避重试。完整原文始终保留在 SQLite 中。
+
+SSE `memory` 状态里的 `recent turns` 和 `pending turns` 是经过本次 token 预算后实际纳入 Prompt 的完整轮次数，不是数据库总轮数，也不表示摘要 Worker 已经开始执行。`has_summary=true` 或界面出现 `rolling summary restored` 才表示本次 Prompt 恢复了滚动摘要；`summary_revision>0` 只表示该会话已经成功生成过摘要版本。
 
 核心预算关系：
 
@@ -329,6 +332,8 @@ status(memory running/completed)
 
 这些 status 不是前端定时动画：completed 事件携带后端实测 `elapsed_ms`，并按阶段附带改写后的 query、检索模式/候选数、Rerank 输入输出、上下文 chunk/token 数等真实信息。流式期间前端展开显示时间线，完成后折叠为 `Pipeline details`。如果答案已生成但 SQLite 保存失败，`finalizing` 使用非致命 `warning`，`done.conversation_persisted=false`，前端保留答案并持续显示黄色提示。
 
+助手回答由 ReactMarkdown 负责块级排版，正文使用 `white-space: normal`，避免本地模型常见的标准 `\n\n` 段落分隔被 `pre-wrap` 二次放大；用户消息仍保留手动换行，Markdown 代码块继续保留缩进、连续空格和原始换行。后端不会为了显示效果粗暴合并模型换行，以免破坏代码、列表、引用和表格语义。
+
 失败路径：
 
 ```text
@@ -362,6 +367,8 @@ X-API-Key: replace-with-a-random-secret
 - `dense`：旧 schema 继续通过 LangChain/Qdrant 的 unnamed dense vector 检索；Hybrid schema 则查询 named dense vector。
 - `bm25`：仅查询同 point 中的 BM25 sparse vector，适合 API 路径、错误码、函数名和专有名词。
 - `hybrid`：每路预取 `HYBRID_PREFETCH_TOP_N`，再由 Qdrant 使用 RRF（默认）或 DBSF 融合并截取调用方要求的 Top K。
+
+检索模式由 `.env` 的 `RETRIEVAL_MODE` 全局配置，不是 Query Router 针对每个问题动态决定。Router 当前只负责 RAG/direct/greeting 路由、意图识别和 query rewrite；进入 RAG 后统一执行已配置的 dense、BM25 或 hybrid 策略。
 
 开启 Cross-Encoder 时，Service 仍先要求 Retriever 返回 `RERANKER_CANDIDATE_TOP_N` 条融合候选，再精排到 `RERANKER_FINAL_TOP_K`；关闭时 Retriever 直接返回 `TOP_K`。所有模式保持统一的 `(Document, score)` 契约，因此上下文预算、SSE 和 API 响应不需要区分底层检索器。
 
@@ -456,7 +463,7 @@ docker compose config
 git diff --check
 ```
 
-截至 2026-08-09，后端离线测试为 206 项，前端 Node 测试为 10 项。它们覆盖配置校验、完整 turn Sliding Window、待压缩缓冲、结构化摘要/版本/旧游标迁移、memory outbox 的事务/合并/租约恢复、Worker 用户优先与重试、上下文预算、会话幂等、路由回退、dense/BM25/RRF/DBSF 检索、Rerank、检索指标与 Notebook 口径、版本化摄取/激活回滚/延迟清理、有界并发 embedding、文件夹递归遍历/过滤/同名路径、真实 SSE 阶段事件与持久化警告、Source 标签归并、上传内容校验、文档删除、API 状态码、取消和日志并发写入。
+截至 2026-08-10，后端离线测试为 206 项，前端 Node 测试为 10 项。它们覆盖配置校验、完整 turn Sliding Window、待压缩缓冲、结构化摘要/版本/旧游标迁移、memory outbox 的事务/合并/租约恢复、Worker 用户优先与重试、上下文预算、会话幂等、路由回退、dense/BM25/RRF/DBSF 检索、Rerank、检索指标与 Notebook 口径、版本化摄取/激活回滚/延迟清理、有界并发 embedding、文件夹递归遍历/过滤/同名路径、真实 SSE 阶段事件与持久化警告、Source 标签归并、上传内容校验、文档删除、API 状态码、取消和日志并发写入。
 
 这些测试大量 mock 了 Qdrant、LLM、embedding 和文件边界，因此通过不代表真实模型链路、Docker 网络、完整浏览器交互或负载性能已经被证明。本次对上传面板做了本地浏览器可见性检查；Dense + BM25 还额外使用 Qdrant 1.18.2 的隔离临时 collection 验证了同 point 写入与 RRF 查询，但仍不等价于带真实 embedding/LLM 的全链路 E2E。
 
@@ -519,6 +526,7 @@ docker-compose.yml       Qdrant；full profile 含前后端
 - 没有 OCR、多模态解析、结构化表格恢复和跨文档语义去重。
 - BM25 + dense 双路召回已经实现但默认不自动迁移旧 collection；启用前必须在新 Hybrid collection 全量重建并运行同语义评估。旧 `RERANKER_TYPE=hybrid` 仍只是后置关键词覆盖精排。
 - 会话摘要已有结构 schema、revision 和 token 指标，但仍依赖 LLM，尚无事实保留率评估；也还没有跨会话用户画像或旧历史语义检索。
+- 会话消息和 query trace 尚未持久化每次回答实际使用的 provider/model 快照，历史回答无法按 DeepSeek、Hermes、Qwen 或具体模型 revision 精确归因。
 - Memory Worker 只在无活跃查询时启动新摘要任务，但同步模型调用开始后无法抢占；单机部署可避免同时启动多个摘要，横向扩展仍需共享队列和分布式租约。
 - JSONL 和阶段耗时提供调试线索，但还没有 Prometheus/OpenTelemetry、告警和 trace 后端。
 - 还缺真实依赖集成测试、浏览器 E2E、并发/背压压测、故障注入和生成质量评估。
