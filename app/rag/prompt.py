@@ -46,6 +46,8 @@ Guidelines for every response:
 7. Use the same technical register as the context. If the documents are formal,
    match that tone; if they are conversational, follow suit.
 
+8. 禁止出现大幅度的空行输出情况。
+
 <conversation_memory>
 {history}
 </conversation_memory>

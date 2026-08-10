@@ -205,10 +205,8 @@ Hybrid point 同时保存 named dense vector 与启用 IDF 的 BM25 sparse vecto
 ### 2. 启动依赖与应用
 
 ```bash
-# Qdrant
+# Qdrant & 后端
 docker compose up -d
-
-# 后端
 conda activate localrag
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 

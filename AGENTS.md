@@ -111,7 +111,7 @@ Standalone upload identity is the normalized original filename. Folder upload id
 - `frontend/src/folderUpload.js` — asynchronous File System Access/WebKit directory traversal, extension/system-file filtering and relative-path duplicate detection.
 - `frontend/src/streamPresentation.js` — stable phase updates including warnings, failed-stage marking, elapsed-time extraction and chunk-to-document Source tag grouping.
 - `frontend/src/api.js` — configurable `VITE_API_BASE_URL`, optional API key, sequential 20-file multipart upload batches with relative-path manifests, Axios JSON calls and abortable fetch/SSE reader.
-- `frontend/src/App.css` — Editorial Ink component styles and CJK/Markdown rendering.
+- `frontend/src/App.css` — Editorial Ink component styles and CJK/Markdown rendering; assistant Markdown uses normal whitespace flow while user text and code blocks preserve intentional formatting.
 - `frontend/src/index.css` — reset, texture and local system font stack; no runtime Google Fonts dependency.
 - `frontend/.dockerignore` — excludes local Vite env files, dependencies and build output from the frontend image context.
 - `frontend/Dockerfile` / `frontend/nginx.conf` — multi-stage production build and SPA serving.
